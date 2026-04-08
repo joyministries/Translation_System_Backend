@@ -72,6 +72,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    ports:
+      - "8000:8000"
     restart: unless-stopped
 
   celery_worker:
@@ -105,7 +107,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: curriculum_flower
-    command: celery -A app.tasks.celery_app flower --port=5555 --url_prefix=flower
+    command: celery -A app.tasks.celery_app flower --port=5555
     environment:
       DATABASE_URL: postgresql://curriculum_user:${DB_PASSWORD}@db/curriculum_db
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0

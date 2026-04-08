@@ -6,6 +6,7 @@ psycopg2-binary
 pymupdf
 openpyxl
 celery[redis]
+flower
 redis
 python-jose[cryptography]
 passlib[bcrypt]
