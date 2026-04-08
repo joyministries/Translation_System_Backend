@@ -1,0 +1,24 @@
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    DATABASE_URL: str
+    REDIS_URL: str
+    SECRET_KEY: str
+    LIBRETRANSLATE_URL: str
+    STORAGE_ROOT: str
+    DB_PASSWORD: str
+    REDIS_PASSWORD: str
+
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    ALLOWED_MIME_TYPES: str = "application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    MAX_UPLOAD_SIZE_MB: int = 50
+
+    API_V1_PREFIX: str = "/api/v1"
+
+
+settings = Settings()
