@@ -1,0 +1,16 @@
+fastapi[all]
+uvicorn[standard]
+sqlalchemy
+alembic
+psycopg2-binary
+pymupdf
+openpyxl
+celery[redis]
+redis
+python-jose[cryptography]
+passlib[bcrypt]
+python-magic
+httpx
+slowapi
+reportlab
+pydantic-settings
