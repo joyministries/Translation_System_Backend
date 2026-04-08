@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine, Base
 
+from app.routers.admin import books, exams, answer_keys
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -20,6 +22,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(books.router)
+app.include_router(exams.router)
+app.include_router(answer_keys.router)
 
 
 @app.get("/health")
