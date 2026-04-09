@@ -24,3 +24,5 @@ storage/
 celerybeat-schedule
 *.db
 *.sqlite3
+PHASES*.md
+phases*.md
