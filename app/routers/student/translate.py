@@ -159,7 +159,33 @@ def download_translation(
     if translation.status != "done":
         raise HTTPException(status_code=400, detail="Translation not complete yet")
 
-    return {
-        "content": translation.translated_text,
-        "content_type": "text/plain",
-    }
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.units import inch
+    import io
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+
+    text = translation.translated_text
+    paragraphs = text.split("\n")
+    for para in paragraphs:
+        if para.strip():
+            story.append(Paragraph(para, styles["Normal"]))
+            story.append(Spacer(1, 0.2 * inch))
+
+    doc.build(story)
+    buffer.seek(0)
+
+    from fastapi.responses import Response
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=translation_{translation_id}.pdf"
+        },
+    )
