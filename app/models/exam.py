@@ -23,10 +23,10 @@ class Exam(Base, UUIDMixin, TimestampMixin):
         ForeignKey("books.id"),
         nullable=True,
     )
-    uploaded_by: Mapped[uuid.UUID] = mapped_column(
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id"),
-        nullable=False,
+        nullable=True,
     )
 
     institution: Mapped["Institution | None"] = relationship(
@@ -61,10 +61,10 @@ class AnswerKey(Base, UUIDMixin, TimestampMixin):
         ForeignKey("exams.id"),
         nullable=True,
     )
-    uploaded_by: Mapped[uuid.UUID] = mapped_column(
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id"),
-        nullable=False,
+        nullable=True,
     )
 
     institution: Mapped["Institution | None"] = relationship("Institution")

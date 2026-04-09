@@ -6,7 +6,7 @@ from app.services.translation_service import TranslationService
 from app.models import Book
 
 
-router = APIRouter(prefix="/student/translate", tags=["student", "translate"])
+router = APIRouter(prefix="/translate", tags=["student", "translate"])
 
 
 @router.post("")

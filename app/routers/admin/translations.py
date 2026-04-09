@@ -6,7 +6,7 @@ from app.database import get_db
 from app.models import Translation, TranslationJob
 
 
-router = APIRouter(prefix="/admin/translations", tags=["admin", "translations"])
+router = APIRouter(prefix="/translations", tags=["admin", "translations"])
 
 
 @router.get("/stats")

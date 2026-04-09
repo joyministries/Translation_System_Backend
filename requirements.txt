@@ -9,9 +9,11 @@ celery[redis]
 flower
 redis
 python-jose[cryptography]
+bcrypt==4.0.1
 passlib[bcrypt]
 python-magic
 httpx
+requests
 slowapi
 reportlab
 pydantic-settings

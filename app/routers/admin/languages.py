@@ -6,7 +6,7 @@ from app.schemas.language import LanguageCreate, LanguageUpdate, LanguageRespons
 from app.services.language_service import LanguageService
 
 
-router = APIRouter(prefix="/admin/languages", tags=["admin", "languages"])
+router = APIRouter(prefix="/languages", tags=["admin", "languages"])
 
 
 @router.get("", response_model=list[LanguageResponse])

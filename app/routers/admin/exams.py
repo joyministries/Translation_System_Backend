@@ -7,7 +7,7 @@ from app.utils.file_utils import validate_mime_type, save_upload_securely
 from app.services.excel_service import parse_excel
 
 
-router = APIRouter(prefix="/admin/exams", tags=["admin", "exams"])
+router = APIRouter(prefix="/exams", tags=["admin", "exams"])
 
 
 @router.post("/import")
@@ -41,7 +41,7 @@ async def import_exam(
         raw_data=raw_data,
         institution_id=institution_id,
         book_id=book_id,
-        uploaded_by="00000000-0000-0000-0000-000000000000",
+        uploaded_by=None,
     )
     db.add(exam)
     db.commit()

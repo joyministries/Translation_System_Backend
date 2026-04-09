@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, UUIDMixin, TimestampMixin
 
 
-class Translation(Base, UUIDMixin):
+class Translation(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "translations"
 
     content_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
@@ -55,10 +55,10 @@ class TranslationJob(Base, UUIDMixin):
         ForeignKey("translations.id"),
         nullable=False,
     )
-    requested_by: Mapped[uuid.UUID] = mapped_column(
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id"),
-        nullable=False,
+        nullable=True,
     )
 
     translation: Mapped["Translation"] = relationship(

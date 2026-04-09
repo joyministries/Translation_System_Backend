@@ -67,7 +67,7 @@ class TranslationService:
             job = TranslationJob(
                 celery_task_id=task.id,
                 translation_id=translation.id,
-                requested_by=uuid.UUID("00000000-0000-0000-0000-000000000000"),
+                requested_by=None,
                 started_at=datetime.utcnow(),
             )
             db.add(job)

@@ -34,10 +34,10 @@ class Book(Base, UUIDMixin, TimestampMixin):
         ForeignKey("institutions.id"),
         nullable=True,
     )
-    uploaded_by: Mapped[uuid.UUID] = mapped_column(
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id"),
-        nullable=False,
+        nullable=True,
     )
 
     institution: Mapped["Institution | None"] = relationship(

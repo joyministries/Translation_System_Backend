@@ -7,7 +7,7 @@ from app.utils.file_utils import validate_mime_type, save_upload_securely
 from app.tasks.ingestion_tasks import extract_pdf_text
 
 
-router = APIRouter(prefix="/admin/books", tags=["admin", "books"])
+router = APIRouter(prefix="/books", tags=["admin", "books"])
 
 
 @router.post("/upload")
@@ -44,7 +44,7 @@ async def upload_book(
         file_path=filename,
         file_size_bytes=len(file_bytes),
         institution_id=institution_id,
-        uploaded_by="00000000-0000-0000-0000-000000000000",
+        uploaded_by=None,
         extraction_status="pending",
     )
     db.add(book)

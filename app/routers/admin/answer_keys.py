@@ -7,7 +7,7 @@ from app.utils.file_utils import validate_mime_type, save_upload_securely
 from app.services.excel_service import parse_excel
 
 
-router = APIRouter(prefix="/admin/answer-keys", tags=["admin", "answer-keys"])
+router = APIRouter(prefix="/answer-keys", tags=["admin", "answer-keys"])
 
 
 @router.post("/import")
@@ -43,7 +43,7 @@ async def import_answer_key(
         institution_id=institution_id,
         book_id=book_id,
         exam_id=exam_id,
-        uploaded_by="00000000-0000-0000-0000-000000000000",
+        uploaded_by=None,
     )
     db.add(answer_key)
     db.commit()

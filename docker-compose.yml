@@ -59,6 +59,9 @@ services:
       STORAGE_ROOT: /app/storage
       DB_PASSWORD: ${DB_PASSWORD}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_CACHE_DIR: "1"
     volumes:
       - ./storage:/app/storage
       - ./.env:/app/.env:ro
@@ -90,6 +93,9 @@ services:
       STORAGE_ROOT: /app/storage
       DB_PASSWORD: ${DB_PASSWORD}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_CACHE_DIR: "1"
     volumes:
       - ./storage:/app/storage
       - ./.env:/app/.env:ro
