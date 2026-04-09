@@ -4,6 +4,7 @@ from datetime import datetime
 
 import requests
 from celery import Task
+from deep_translator import GoogleTranslator
 
 from app.tasks.celery_app import celery_app
 from app.database import SessionLocal
@@ -28,11 +29,18 @@ def translate_chunk(text: str, source_lang: str, target_lang: str) -> str:
             },
             timeout=30,
         )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("translatedText", text)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("translatedText", text)
     except Exception as e:
-        logger.error(f"Translation error: {e}")
+        logger.warning(f"LibreTranslate failed: {e}")
+
+    logger.info("Falling back to Google Translate")
+    try:
+        translator = GoogleTranslator(source=source_lang, target=target_lang)
+        return translator.translate(text)
+    except Exception as ge:
+        logger.error(f"Google Translate also failed: {ge}")
         raise
 
 
@@ -61,10 +69,12 @@ def translate_content(self, translation_id: str, original_text: str, language_id
         chunks = chunk_text(original_text)
         logger.info(f"Split into {len(chunks)} chunks")
 
+        google_code = language.libretranslate_code or language.code
+
         translated_chunks = []
         for i, chunk in enumerate(chunks):
             logger.info(f"Translating chunk {i + 1}/{len(chunks)}")
-            translated = translate_chunk(chunk, "en", language.libretranslate_code)
+            translated = translate_chunk(chunk, "en", google_code)
             translated_chunks.append(translated)
 
         translated_text = merge_chunks(translated_chunks)
@@ -77,7 +87,7 @@ def translate_content(self, translation_id: str, original_text: str, language_id
         if translation:
             translation.translated_text = translated_text
             translation.status = "done"
-            translation.translation_engine = "libretranslate"
+            translation.translation_engine = "google"
             translation.chunk_count = len(chunks)
             db.commit()
 
