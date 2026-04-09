@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.services.translation_service import TranslationService
 from app.models import Book
+from app.utils.security import require_role, get_current_user
+from app.models.user import User
 
 
 router = APIRouter(prefix="/translate", tags=["student", "translate"])
@@ -15,6 +17,7 @@ async def trigger_translation(
     content_id: str = None,
     language_id: int = None,
     source_language_id: int = 1,
+    current_user: User = Depends(require_role("admin", "student")),
     db: Session = Depends(get_db),
 ):
     if not content_id or not language_id:
@@ -80,6 +83,7 @@ async def trigger_translation(
 @router.get("/status/{job_id}")
 def get_translation_status(
     job_id: str,
+    current_user: User = Depends(require_role("admin", "student")),
     db: Session = Depends(get_db),
 ):
     from app.models import TranslationJob
@@ -106,6 +110,7 @@ def get_translation_status(
 @router.get("/{translation_id}")
 def get_translation(
     translation_id: str,
+    current_user: User = Depends(require_role("admin", "student")),
     db: Session = Depends(get_db),
 ):
     import uuid
@@ -137,6 +142,7 @@ def get_translation(
 @router.get("/{translation_id}/download")
 def download_translation(
     translation_id: str,
+    current_user: User = Depends(require_role("admin", "student")),
     db: Session = Depends(get_db),
 ):
     import uuid

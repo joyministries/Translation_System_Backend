@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     STORAGE_ROOT: str
     DB_PASSWORD: str
     REDIS_PASSWORD: str
+    GOOGLE_CLOUD_API_KEY: str | None = None
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7

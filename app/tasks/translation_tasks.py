@@ -14,8 +14,11 @@ from app.utils.text_chunker import chunk_text, merge_chunks
 
 logger = logging.getLogger(__name__)
 
+TRANSLATION_ENGINE = "libretranslate"
+
 
 def translate_chunk(text: str, source_lang: str, target_lang: str) -> str:
+    global TRANSLATION_ENGINE
     from app.config import settings
 
     try:
@@ -31,14 +34,39 @@ def translate_chunk(text: str, source_lang: str, target_lang: str) -> str:
         )
         if response.status_code == 200:
             data = response.json()
+            TRANSLATION_ENGINE = "libretranslate"
             return data.get("translatedText", text)
     except Exception as e:
         logger.warning(f"LibreTranslate failed: {e}")
 
-    logger.info("Falling back to Google Translate")
+    logger.info("Falling back to Google Cloud Translation API")
+    try:
+        if settings.GOOGLE_CLOUD_API_KEY:
+            cloud_response = requests.get(
+                f"https://translation.googleapis.com/language/translate/v2",
+                params={
+                    "key": settings.GOOGLE_CLOUD_API_KEY,
+                    "q": text[:5000],
+                    "source": source_lang,
+                    "target": target_lang,
+                    "format": "text",
+                },
+                timeout=30,
+            )
+            if cloud_response.status_code == 200:
+                data = cloud_response.json()
+                if data.get("data", {}).get("translations"):
+                    TRANSLATION_ENGINE = "google_cloud"
+                    return data["data"]["translations"][0]["translatedText"]
+    except Exception as gce:
+        logger.warning(f"Google Cloud API failed: {gce}")
+
+    logger.info("Falling back to Google Translate (free)")
     try:
         translator = GoogleTranslator(source=source_lang, target=target_lang)
-        return translator.translate(text)
+        result = translator.translate(text)
+        TRANSLATION_ENGINE = "google_free"
+        return result
     except Exception as ge:
         logger.error(f"Google Translate also failed: {ge}")
         raise
@@ -106,7 +134,7 @@ def translate_content(
         if translation:
             translation.translated_text = translated_text
             translation.status = "done"
-            translation.translation_engine = "google"
+            translation.translation_engine = TRANSLATION_ENGINE
             translation.chunk_count = len(chunks)
             db.commit()
 

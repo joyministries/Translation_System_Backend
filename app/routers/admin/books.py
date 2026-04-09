@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Book
 from app.utils.file_utils import validate_mime_type, save_upload_securely
+from app.utils.security import require_role, get_current_user
+from app.models.user import User
 
 
 router = APIRouter(prefix="/books", tags=["admin", "books"])
@@ -16,6 +18,7 @@ async def upload_book(
     subject: str | None = None,
     grade_level: str | None = None,
     institution_id: str | None = None,
+    current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     if not file.filename:
