@@ -14,6 +14,7 @@ async def trigger_translation(
     content_type: str = "book",
     content_id: str = None,
     language_id: int = None,
+    source_language_id: int = 1,
     db: Session = Depends(get_db),
 ):
     if not content_id or not language_id:
@@ -34,6 +35,7 @@ async def trigger_translation(
             content_type="book",
             content_id=book.id,
             language_id=language_id,
+            source_language_id=source_language_id,
             original_text=book.extracted_text,
         )
 
@@ -93,6 +95,7 @@ def get_translation(
         "content_type": translation.content_type,
         "content_id": str(translation.content_id),
         "language_id": translation.language_id,
+        "source_language_id": translation.source_language_id,
         "translated_text": translation.translated_text,
         "status": translation.status,
         "chunk_count": translation.chunk_count,

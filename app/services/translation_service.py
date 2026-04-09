@@ -16,6 +16,7 @@ class TranslationService:
         content_type: str,
         content_id: uuid.UUID,
         language_id: int,
+        source_language_id: int | None = None,
         original_text: str | None = None,
     ) -> tuple[Translation, str | None]:
         existing = (
@@ -49,6 +50,7 @@ class TranslationService:
             content_type=content_type,
             content_id=content_id,
             language_id=language_id,
+            source_language_id=source_language_id,
             status="pending",
         )
         db.add(translation)
@@ -61,7 +63,10 @@ class TranslationService:
             db.commit()
 
             task = translate_content.delay(
-                str(translation.id), original_text, str(language_id)
+                str(translation.id),
+                original_text,
+                str(language_id),
+                str(source_language_id) if source_language_id else None,
             )
 
             job = TranslationJob(

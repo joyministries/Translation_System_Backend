@@ -52,29 +52,48 @@ class TranslationTask(Task):
 
 
 @celery_app.task(bind=True, base=TranslationTask)
-def translate_content(self, translation_id: str, original_text: str, language_id: int):
+def translate_content(
+    self,
+    translation_id: str,
+    original_text: str,
+    language_id: int,
+    source_language_id: int | None = None,
+):
     logger.info(f"Translation task started: {translation_id}")
-    logger.info(f"Language ID: {language_id}, Text length: {len(original_text)}")
+    logger.info(
+        f"Language ID: {language_id}, Source Language ID: {source_language_id}, Text length: {len(original_text)}"
+    )
 
     db = SessionLocal()
     try:
-        from app.models import Translation, TranslationJob
+        from app.models import Translation, TranslationJob, Language
 
-        language = db.query(Language).filter(Language.id == language_id).first()
-        if not language or not language.libretranslate_code:
+        target_language = db.query(Language).filter(Language.id == language_id).first()
+        if not target_language or not target_language.libretranslate_code:
             raise ValueError(
                 f"Invalid language or missing libretranslate_code for language_id: {language_id}"
             )
 
+        source_language = None
+        if source_language_id:
+            source_language = (
+                db.query(Language).filter(Language.id == source_language_id).first()
+            )
+
+        source_lang_code = (
+            source_language.libretranslate_code if source_language else "en"
+        )
+        target_lang_code = target_language.libretranslate_code or target_language.code
+
+        logger.info(f"Translating from {source_lang_code} to {target_lang_code}")
+
         chunks = chunk_text(original_text)
         logger.info(f"Split into {len(chunks)} chunks")
-
-        google_code = language.libretranslate_code or language.code
 
         translated_chunks = []
         for i, chunk in enumerate(chunks):
             logger.info(f"Translating chunk {i + 1}/{len(chunks)}")
-            translated = translate_chunk(chunk, "en", google_code)
+            translated = translate_chunk(chunk, source_lang_code, target_lang_code)
             translated_chunks.append(translated)
 
         translated_text = merge_chunks(translated_chunks)

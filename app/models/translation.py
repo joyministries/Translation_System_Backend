@@ -29,9 +29,17 @@ class Translation(Base, UUIDMixin, TimestampMixin):
         ForeignKey("languages.id"),
         nullable=False,
     )
+    source_language_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("languages.id"),
+        nullable=True,
+    )
 
     language: Mapped["Language"] = relationship(
         "Language", back_populates="translations"
+    )
+    source_language: Mapped["Language | None"] = relationship(
+        "Language", foreign_keys=[source_language_id]
     )
     translation_jobs: Mapped[list["TranslationJob"]] = relationship(
         "TranslationJob", back_populates="translation"
