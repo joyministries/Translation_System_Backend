@@ -9,12 +9,21 @@ ALLOWED_MIME_TYPES = {
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
     "application/vnd.ms-excel": ".xls",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
 }
 
 
 def validate_mime_type(file_bytes: bytes) -> str | None:
     mime = magic.from_buffer(file_bytes[:2048], mime=True)
-    return mime if mime in ALLOWED_MIME_TYPES else None
+
+    if mime in ALLOWED_MIME_TYPES:
+        return mime
+
+    if file_bytes[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return "application/msword"
+
+    return None
 
 
 def save_upload_securely(file_bytes: bytes, mime_type: str) -> str:

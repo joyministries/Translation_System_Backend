@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Book
 from app.utils.file_utils import validate_mime_type, save_upload_securely
-from app.tasks.ingestion_tasks import extract_pdf_text
 
 
 router = APIRouter(prefix="/books", tags=["admin", "books"])
@@ -29,11 +28,8 @@ async def upload_book(
     mime_type = validate_mime_type(file_bytes)
     if not mime_type:
         raise HTTPException(
-            status_code=400, detail="Invalid file type. Only PDF allowed."
+            status_code=400, detail="Invalid file type. Only PDF, DOC, DOCX allowed."
         )
-
-    if mime_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     filename = save_upload_securely(file_bytes, mime_type)
 
@@ -51,13 +47,27 @@ async def upload_book(
     db.commit()
     db.refresh(book)
 
-    extract_pdf_text.delay(str(book.id), filename)
+    if mime_type == "application/pdf":
+        from app.tasks.ingestion_tasks import extract_pdf_text
+
+        extract_pdf_text.delay(str(book.id), filename)
+        message = "Book uploaded. PDF extraction in progress."
+    elif mime_type in [
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]:
+        from app.tasks.ingestion_tasks import extract_doc_text
+
+        extract_doc_text.delay(str(book.id), filename)
+        message = "Book uploaded. DOC/DOCX extraction in progress."
+    else:
+        message = "Book uploaded successfully."
 
     return {
         "id": str(book.id),
         "title": book.title,
         "status": "pending",
-        "message": "Book uploaded. PDF extraction in progress.",
+        "message": message,
     }
 
 

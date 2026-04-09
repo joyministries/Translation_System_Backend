@@ -45,6 +45,35 @@ async def trigger_translation(
             "task_id": task_id,
         }
 
+    if content_type == "exam":
+        from app.models import Exam
+
+        exam = db.query(Exam).filter(Exam.id == content_id).first()
+        if not exam:
+            raise HTTPException(status_code=404, detail="Exam not found")
+
+        if not exam.raw_data:
+            raise HTTPException(status_code=400, detail="Exam has no data")
+
+        import json
+
+        exam_text = json.dumps(exam.raw_data)
+
+        translation, task_id = TranslationService.get_or_create_translation(
+            db,
+            content_type="exam",
+            content_id=exam.id,
+            language_id=language_id,
+            source_language_id=source_language_id,
+            original_text=exam_text,
+        )
+
+        return {
+            "translation_id": str(translation.id),
+            "status": translation.status,
+            "task_id": task_id,
+        }
+
     raise HTTPException(status_code=400, detail="Unsupported content_type")
 
 

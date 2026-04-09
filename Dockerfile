@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     libmagic1 \
     poppler-utils \
+    catdoc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
