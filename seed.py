@@ -3,8 +3,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import uuid
 from app.database import SessionLocal, engine
 from app.models import Language, Institution
+from app.utils.security import get_password_hash
 
 
 LANGUAGES = [
@@ -131,9 +133,37 @@ INSTITUTIONS = [
     {"name": "University of Lagos", "code": "UL"},
 ]
 
+USERS = [
+    {
+        "email": "admin@curriculum.edu",
+        "password": "admin123",
+        "role": "admin",
+        "institution_code": None,
+    },
+    {
+        "email": "teacher@curriculum.edu",
+        "password": "teacher123",
+        "role": "teacher",
+        "institution_code": "UON",
+    },
+    {
+        "email": "student@curriculum.edu",
+        "password": "student123",
+        "role": "student",
+        "institution_code": "UON",
+    },
+    {
+        "email": "translator@curriculum.edu",
+        "password": "translator123",
+        "role": "translator",
+        "institution_code": "UON",
+    },
+]
+
 
 def seed():
     from app.models.base import Base
+    from app.models.user import User
 
     Base.metadata.create_all(bind=engine)
 
@@ -158,7 +188,34 @@ def seed():
                 db.add(institution)
 
         db.commit()
-        print(f"Seeded {len(LANGUAGES)} languages and {len(INSTITUTIONS)} institutions")
+
+        for user_data in USERS:
+            existing = db.query(User).filter(User.email == user_data["email"]).first()
+            if not existing:
+                institution_id = None
+                if user_data["institution_code"]:
+                    inst = (
+                        db.query(Institution)
+                        .filter(Institution.code == user_data["institution_code"])
+                        .first()
+                    )
+                    if inst:
+                        institution_id = inst.id
+
+                user = User(
+                    id=uuid.uuid4(),
+                    email=user_data["email"],
+                    hashed_password=get_password_hash(user_data["password"]),
+                    role=user_data["role"],
+                    is_active=True,
+                    institution_id=institution_id,
+                )
+                db.add(user)
+
+        db.commit()
+        print(
+            f"Seeded {len(LANGUAGES)} languages, {len(INSTITUTIONS)} institutions, {len(USERS)} users"
+        )
 
     except Exception as e:
         db.rollback()

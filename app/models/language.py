@@ -17,5 +17,10 @@ class Language(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     translations: Mapped[list["Translation"]] = relationship(
-        "Translation", back_populates="language"
+        "Translation", back_populates="language", foreign_keys="Translation.language_id"
+    )
+    source_translations: Mapped[list["Translation"]] = relationship(
+        "Translation",
+        back_populates="source_language",
+        foreign_keys="Translation.source_language_id",
     )

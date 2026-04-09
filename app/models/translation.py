@@ -36,7 +36,7 @@ class Translation(Base, UUIDMixin, TimestampMixin):
     )
 
     language: Mapped["Language"] = relationship(
-        "Language", back_populates="translations"
+        "Language", back_populates="translations", foreign_keys=[language_id]
     )
     source_language: Mapped["Language | None"] = relationship(
         "Language", foreign_keys=[source_language_id]
