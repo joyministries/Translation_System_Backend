@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = "noreply@curriculum.edu"
+
     ALLOWED_MIME_TYPES: str = "application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     MAX_UPLOAD_SIZE_MB: int = 50
 

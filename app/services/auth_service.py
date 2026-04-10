@@ -1,3 +1,6 @@
+import secrets
+import string
+
 from datetime import datetime
 import uuid
 import redis
@@ -12,6 +15,7 @@ from app.utils.security import (
     get_password_hash,
 )
 from app.config import settings
+from app.services.email_service import EmailService
 
 redis_client = redis.from_url(settings.REDIS_URL)
 
@@ -77,3 +81,33 @@ class AuthService:
     @staticmethod
     def get_user_by_email(db: Session, email: str) -> User | None:
         return db.query(User).filter(User.email == email).first()
+
+    @staticmethod
+    def generate_temp_password(length: int = 12) -> str:
+        alphabet = string.ascii_letters + string.digits
+        return "".join(secrets.choice(alphabet) for _ in range(length))
+
+    @staticmethod
+    def register_with_temp_password(
+        db: Session,
+        email: str,
+        role: str,
+        institution_id: uuid.UUID | None = None,
+    ) -> tuple[User, str]:
+        temp_password = AuthService.generate_temp_password()
+        hashed_password = get_password_hash(temp_password)
+        user = User(
+            email=email,
+            hashed_password=hashed_password,
+            role=role,
+            institution_id=institution_id,
+            is_active=True,
+            must_change_password=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        EmailService.send_welcome_email(email, temp_password)
+
+        return user, temp_password

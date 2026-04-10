@@ -10,9 +10,16 @@ from app.schemas.auth import (
     RegisterRequest,
     UserResponse,
     MessageResponse,
+    ChangePasswordRequest,
 )
 from app.services.auth_service import AuthService
-from app.utils.security import get_current_user, require_role, decode_token
+from app.utils.security import (
+    get_current_user,
+    require_role,
+    decode_token,
+    verify_password,
+    get_password_hash,
+)
 from app.models import User
 
 
@@ -31,10 +38,12 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     access_token, refresh_token = AuthService.create_tokens(user)
     AuthService.update_last_login(db, user.id)
 
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
-    )
+    if user.must_change_password:
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            must_change_password=True,
+        )
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -108,13 +117,21 @@ def register(
                 detail="Invalid institution_id format",
             )
 
-    user = AuthService.register(
-        db,
-        request.email,
-        request.password,
-        request.role,
-        institution_uuid,
-    )
+    if request.use_temp_password:
+        user, _ = AuthService.register_with_temp_password(
+            db,
+            request.email,
+            request.role,
+            institution_uuid,
+        )
+    else:
+        user = AuthService.register(
+            db,
+            request.email,
+            request.password,
+            request.role,
+            institution_uuid,
+        )
 
     return UserResponse(
         id=str(user.id),
@@ -143,4 +160,26 @@ def get_me(
         last_login_at=current_user.last_login_at.isoformat()
         if current_user.last_login_at
         else None,
+        must_change_password=current_user.must_change_password,
     )
+
+
+@router.post("/change-password", response_model=MessageResponse)
+def change_password(
+    request: ChangePasswordRequest,
+    current_user: User = Depends(
+        require_role("admin", "teacher", "student", "translator")
+    ),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(request.old_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect old password",
+        )
+
+    current_user.hashed_password = get_password_hash(request.new_password)
+    current_user.must_change_password = False
+    db.commit()
+
+    return MessageResponse(message="Password changed successfully")

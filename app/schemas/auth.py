@@ -10,6 +10,7 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    must_change_password: bool = False
 
 
 class RefreshRequest(BaseModel):
@@ -23,6 +24,7 @@ class UserResponse(BaseModel):
     is_active: bool
     institution_id: str | None = None
     last_login_at: str | None = None
+    must_change_password: bool = False
 
     class Config:
         from_attributes = True
@@ -33,6 +35,12 @@ class RegisterRequest(BaseModel):
     password: str
     role: str
     institution_id: str | None = None
+    use_temp_password: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
 
 
 class MessageResponse(BaseModel):

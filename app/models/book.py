@@ -28,6 +28,9 @@ class Book(Base, UUIDMixin, TimestampMixin):
         default=ExtractionStatus.PENDING,
         nullable=False,
     )
+    first_content_page: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=1
+    )
 
     institution_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

@@ -23,6 +23,9 @@ class Translation(Base, UUIDMixin, TimestampMixin):
         default="pending",
         nullable=False,
     )
+    output_format: Mapped[str] = mapped_column(
+        String(20), default="pdf", nullable=False
+    )
 
     language_id: Mapped[int] = mapped_column(
         Integer,

@@ -17,6 +17,7 @@ async def trigger_translation(
     content_id: str = None,
     language_id: int = None,
     source_language_id: int = 1,
+    output_format: str = "pdf",
     current_user: User = Depends(require_role("admin", "student")),
     db: Session = Depends(get_db),
 ):
@@ -40,12 +41,14 @@ async def trigger_translation(
             language_id=language_id,
             source_language_id=source_language_id,
             original_text=book.extracted_text,
+            output_format=output_format,
         )
 
         return {
             "translation_id": str(translation.id),
             "status": translation.status,
             "task_id": task_id,
+            "output_format": output_format,
         }
 
     if content_type == "exam":
@@ -69,12 +72,14 @@ async def trigger_translation(
             language_id=language_id,
             source_language_id=source_language_id,
             original_text=exam_text,
+            output_format="xlsx",
         )
 
         return {
             "translation_id": str(translation.id),
             "status": translation.status,
             "task_id": task_id,
+            "output_format": "xlsx",
         }
 
     raise HTTPException(status_code=400, detail="Unsupported content_type")
@@ -142,6 +147,7 @@ def get_translation(
 @router.get("/{translation_id}/download")
 def download_translation(
     translation_id: str,
+    format: str = "pdf",
     current_user: User = Depends(require_role("admin", "student")),
     db: Session = Depends(get_db),
 ):
@@ -159,33 +165,66 @@ def download_translation(
     if translation.status != "done":
         raise HTTPException(status_code=400, detail="Translation not complete yet")
 
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-    from reportlab.lib.units import inch
-    import io
-
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
-    styles = getSampleStyleSheet()
-    story = []
-
-    text = translation.translated_text
-    paragraphs = text.split("\n")
-    for para in paragraphs:
-        if para.strip():
-            story.append(Paragraph(para, styles["Normal"]))
-            story.append(Spacer(1, 0.2 * inch))
-
-    doc.build(story)
-    buffer.seek(0)
-
     from fastapi.responses import Response
 
+    text = translation.translated_text
+    content = None
+    media_type = "application/pdf"
+    filename = f"translation_{translation_id}.pdf"
+
+    if format == "xlsx" or translation.content_type == "exam":
+        from app.services.doc_service import translate_excel
+
+        if translation.content_type == "exam":
+            original_file = translation.content_id
+            if hasattr(translation.content_id, "file_path"):
+                original_file = translation.content_id.file_path
+        else:
+            book = db.query(Book).filter(Book.id == str(translation.content_id)).first()
+            original_file = book.file_path if book else None
+
+        if original_file:
+            content = translate_excel(original_file, {})
+            media_type = (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            filename = f"translation_{translation_id}.xlsx"
+        else:
+            content = text.encode("utf-8")
+            media_type = "text/plain"
+            filename = f"translation_{translation_id}.txt"
+    elif format == "docx":
+        from app.services.doc_service import create_translated_docx
+
+        content = create_translated_docx(text)
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        filename = f"translation_{translation_id}.docx"
+    else:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        from reportlab.lib.units import inch
+        import io
+
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+
+        paragraphs = text.split("\n")
+        for para in paragraphs:
+            if para.strip():
+                story.append(Paragraph(para, styles["Normal"]))
+                story.append(Spacer(1, 0.2 * inch))
+
+        doc.build(story)
+        buffer.seek(0)
+        content = buffer.getvalue()
+
     return Response(
-        content=buffer.getvalue(),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename=translation_{translation_id}.pdf"
-        },
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )

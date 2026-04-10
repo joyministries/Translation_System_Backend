@@ -18,6 +18,7 @@ class TranslationService:
         language_id: int,
         source_language_id: int | None = None,
         original_text: str | None = None,
+        output_format: str = "pdf",
     ) -> tuple[Translation, str | None]:
         existing = (
             db.query(Translation)
@@ -52,6 +53,7 @@ class TranslationService:
             language_id=language_id,
             source_language_id=source_language_id,
             status="pending",
+            output_format=output_format,
         )
         db.add(translation)
         db.commit()

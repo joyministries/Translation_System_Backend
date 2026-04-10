@@ -18,6 +18,7 @@ async def upload_book(
     subject: str | None = None,
     grade_level: str | None = None,
     institution_id: str | None = None,
+    first_content_page: int = 1,
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
@@ -45,6 +46,7 @@ async def upload_book(
         institution_id=institution_id,
         uploaded_by=None,
         extraction_status="pending",
+        first_content_page=first_content_page,
     )
     db.add(book)
     db.commit()

@@ -283,6 +283,67 @@ Authorization: Bearer <admin_token>
 
 ---
 
+## Deployment / Shipping to Another Machine
+
+### Prerequisites
+- Docker & Docker Compose installed on target machine
+
+### Files Needed
+Copy these from this project:
+1. All source code files
+2. `.env` file (contains database passwords, secret keys, etc.)
+
+### Running on New Machine
+
+```bash
+# 1. Navigate to project folder
+cd Translation_Backend
+
+# 2. Ensure .env exists (if not, copy from .env.example)
+cp .env.example .env
+# Then edit .env with your desired secrets
+
+# 3. Start all services
+docker-compose up -d
+
+# 4. Check status
+docker-compose ps
+```
+
+### First Time Setup
+On first run, the database will be created automatically. The seed data (languages, test users) is loaded when the container starts.
+
+### Default Test Users
+| Email | Password | Role |
+|-------|----------|------|
+| admin@curriculum.edu | admin123 | admin |
+| teacher@curriculum.edu | teacher123 | teacher |
+| student@curriculum.edu | student123 | student |
+| translator@curriculum.edu | translator123 | translator |
+
+### Data Persistence
+All data is stored in Docker volumes:
+- `pgdata` - PostgreSQL database
+- `redisdata` - Redis cache
+- `libretranslate_data` - Translation models
+- `./storage` folder - Uploaded files
+
+To include existing data when shipping:
+```bash
+# Export database
+docker-compose exec -T db pg_dump -U curriculum_user curriculum_db > backup.sql
+
+# Import on new machine
+docker-compose exec -T db psql -U curriculum_user curriculum_db < backup.sql
+```
+
+### Stopping
+```bash
+docker-compose down
+```
+
+---
+
 ## Environment Variables
 
 Create `.env` file:

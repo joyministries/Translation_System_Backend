@@ -23,7 +23,8 @@ def extract_pdf_text(self, book_id: str, file_path: str):
         book.extraction_status = "processing"
         db.commit()
 
-        text, page_count = extract_text_from_pdf(file_path)
+        start_page = book.first_content_page or 1
+        text, page_count = extract_text_from_pdf(file_path, start_page=start_page)
 
         book.extracted_text = text
         book.page_count = page_count
