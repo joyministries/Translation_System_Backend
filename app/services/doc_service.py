@@ -51,6 +51,32 @@ def translate_excel(original_file_path: str, translations: dict[int, str]) -> by
     return output.getvalue()
 
 
+def translate_excel_from_json(original_file_path: str, translated_json: str) -> bytes:
+    import json
+
+    full_path = get_file_path(original_file_path)
+    wb = load_workbook(full_path)
+
+    try:
+        translations = json.loads(translated_json)
+        if isinstance(translations, dict) and "sheets" in translations:
+            sheets_data = translations.get("sheets", {})
+            for sheet_name, rows in sheets_data.items():
+                if sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    for row_idx, row_data in enumerate(rows, start=1):
+                        for col_idx, value in enumerate(row_data, start=1):
+                            if col_idx <= ws.max_column:
+                                ws.cell(row=row_idx, column=col_idx).value = value
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.warning(f"Could not parse translations: {e}")
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
 def create_translated_pdf(text: str) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)

@@ -173,26 +173,46 @@ def download_translation(
     filename = f"translation_{translation_id}.pdf"
 
     if format == "xlsx" or translation.content_type == "exam":
-        from app.services.doc_service import translate_excel
-
         if translation.content_type == "exam":
-            original_file = translation.content_id
-            if hasattr(translation.content_id, "file_path"):
-                original_file = translation.content_id.file_path
+            from app.models import Exam
+
+            exam = db.query(Exam).filter(Exam.id == str(translation.content_id)).first()
+            if exam and exam.file_path:
+                from app.services.doc_service import translate_excel_from_json
+
+                content = translate_excel_from_json(
+                    exam.file_path, translation.translated_text
+                )
+                media_type = (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                filename = f"translation_{translation_id}.xlsx"
+            else:
+                content = text.encode("utf-8")
+                media_type = "text/plain"
+                filename = f"translation_{translation_id}.txt"
         else:
             book = db.query(Book).filter(Book.id == str(translation.content_id)).first()
-            original_file = book.file_path if book else None
+            if (
+                book
+                and book.file_path
+                and (
+                    book.file_path.endswith(".xlsx") or book.file_path.endswith(".xls")
+                )
+            ):
+                from app.services.doc_service import translate_excel_from_json
 
-        if original_file:
-            content = translate_excel(original_file, {})
-            media_type = (
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            filename = f"translation_{translation_id}.xlsx"
-        else:
-            content = text.encode("utf-8")
-            media_type = "text/plain"
-            filename = f"translation_{translation_id}.txt"
+                content = translate_excel_from_json(
+                    book.file_path, translation.translated_text
+                )
+                media_type = (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                filename = f"translation_{translation_id}.xlsx"
+            else:
+                content = text.encode("utf-8")
+                media_type = "text/plain"
+                filename = f"translation_{translation_id}.txt"
     elif format == "docx":
         from app.services.doc_service import create_translated_docx
 
