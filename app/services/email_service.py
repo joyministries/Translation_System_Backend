@@ -1,4 +1,5 @@
 import smtplib
+import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import uuid
@@ -6,10 +7,14 @@ import uuid
 from app.config import settings
 
 
+logger = logging.getLogger(__name__)
+
+
 class EmailService:
     @staticmethod
     def send_welcome_email(to_email: str, temp_password: str) -> bool:
         if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
+            logger.warning("SMTP credentials not configured")
             return False
 
         msg = MIMEMultipart()
@@ -32,10 +37,16 @@ Curriculum Management System"""
         msg.attach(MIMEText(body, "plain"))
 
         try:
+            logger.info(
+                f"Sending email to {to_email} via {settings.SMTP_HOST}:{settings.SMTP_PORT}"
+            )
             with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
                 server.starttls()
+                logger.info(f"Logging in as {settings.SMTP_USER}")
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
                 server.sendmail(settings.SMTP_FROM, to_email, msg.as_string())
+            logger.info(f"Email sent successfully to {to_email}")
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to send email: {e}")
             return False

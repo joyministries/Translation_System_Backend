@@ -32,7 +32,7 @@ class UserResponse(BaseModel):
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str | None = None
     role: str
     institution_id: str | None = None
     use_temp_password: bool = False
