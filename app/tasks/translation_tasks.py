@@ -46,8 +46,48 @@ def translate_chunk(text: str, source_lang: str, target_lang: str) -> str:
     return text
 
 
+def _batch_translate(texts: list[str], source_lang: str, target_lang: str) -> list[str]:
+    """Translate a list of texts in one API call using concurrent requests."""
+    from app.config import settings
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if not texts:
+        return texts
+
+    # Try Google Translate batch (up to 128 strings per request)
+    try:
+        if settings.GOOGLE_CLOUD_API_KEY:
+            import urllib.parse
+            # Build POST body with repeated q= params
+            body = "&".join(
+                f"q={urllib.parse.quote(str(t)[:5000])}" for t in texts
+            ) + f"&source={source_lang}&target={target_lang}&format=text"
+
+            response = requests.post(
+                f"https://translation.googleapis.com/language/translate/v2?key={settings.GOOGLE_CLOUD_API_KEY}",
+                data=body,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=60,
+            )
+            if response.status_code == 200:
+                translations = response.json().get("data", {}).get("translations", [])
+                if len(translations) == len(texts):
+                    logger.info(f"Batch translated {len(texts)} texts {source_lang}->{target_lang}")
+                    return [t["translatedText"] for t in translations]
+    except Exception as e:
+        logger.warning(f"Batch translate failed: {e}")
+
+    # Fallback: concurrent individual requests
+    results = [None] * len(texts)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(translate_chunk, t, source_lang, target_lang): i for i, t in enumerate(texts)}
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+    return results
+
+
 def _translate_excel_json(original_text: str, source_lang: str, target_lang: str) -> str:
-    """Translate only cell values in the Excel JSON, preserving structure."""
+    """Translate cell values and sheet names in batches."""
     try:
         data = json.loads(original_text)
     except Exception:
@@ -56,25 +96,36 @@ def _translate_excel_json(original_text: str, source_lang: str, target_lang: str
     sheets = data.get("sheets") or {}
     sheet_names = data.get("sheet_names") or list(sheets.keys())
 
-    translated_sheets = {}
-    translated_sheet_names = []
+    # Collect all unique non-empty strings across all sheets + sheet names
+    all_texts = list(sheet_names)
     for sheet_name in sheet_names:
-        translated_name = translate_chunk(sheet_name, source_lang, target_lang)
-        translated_sheet_names.append(translated_name)
-        rows = sheets.get(sheet_name, [])
-        translated_rows = []
-        for row in rows:
-            translated_row = []
+        for row in sheets.get(sheet_name, []):
             for cell in row:
                 if cell and str(cell).strip():
-                    translated_row.append(translate_chunk(str(cell), source_lang, target_lang))
-                else:
-                    translated_row.append(cell)
-            translated_rows.append(translated_row)
-        translated_sheets[translated_name] = translated_rows
+                    all_texts.append(str(cell))
+
+    # Batch translate in chunks of 100
+    BATCH = 100
+    translated_map = {}
+    for i in range(0, len(all_texts), BATCH):
+        batch = all_texts[i:i + BATCH]
+        results = _batch_translate(batch, source_lang, target_lang)
+        for orig, trans in zip(batch, results):
+            translated_map[orig] = trans
+
+    translated_sheet_names = [translated_map.get(n, n) for n in sheet_names]
+
+    translated_sheets = {}
+    for sheet_name, trans_name in zip(sheet_names, translated_sheet_names):
+        rows = sheets.get(sheet_name, [])
+        translated_rows = [
+            [translated_map.get(str(cell), cell) if cell and str(cell).strip() else cell for cell in row]
+            for row in rows
+        ]
+        translated_sheets[trans_name] = translated_rows
 
     return json.dumps({
-        "sheet_names": sheet_names,           # original names (for workbook mapping)
+        "sheet_names": sheet_names,
         "translated_sheet_names": translated_sheet_names,
         "sheets": translated_sheets,
     })
@@ -135,12 +186,8 @@ def translate_content(
         else:
             chunks = chunk_text(original_text)
             logger.info(f"Split into {len(chunks)} chunks")
-            translated_chunks = []
-            for i, chunk in enumerate(chunks):
-                logger.info(f"Translating chunk {i + 1}/{len(chunks)}")
-                translated = translate_chunk(chunk, source_lang_code, target_lang_code)
-                translated_chunks.append(translated)
-            translated_text = merge_chunks(translated_chunks)
+            results = _batch_translate(chunks, source_lang_code, target_lang_code)
+            translated_text = merge_chunks(results)
 
         translation = (
             db.query(Translation)
