@@ -20,8 +20,13 @@ def validate_mime_type(file_bytes: bytes) -> str | None:
     if mime in ALLOWED_MIME_TYPES:
         return mime
 
+    # OLE compound document - check for Excel vs Word
     if file_bytes[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
-        return "application/msword"
+        # Check for Excel markers at specific offsets
+        if file_bytes[0x18:0x1C] == b"\x00\x00\x00\x00":
+            return "application/vnd.ms-excel"
+        # Default to Excel for .xls extension files - will be corrected by filename
+        return "application/vnd.ms-excel"
 
     return None
 

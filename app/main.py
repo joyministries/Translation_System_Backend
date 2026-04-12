@@ -9,7 +9,8 @@ from app.routers import admin, student, auth
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="Curriculum Translation System",
+    title="Curriculum Translation API",
+    description="Translate educational content (books, exams, answer keys) between languages. Admin can manage content and users. Students can access content and request translations.",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -18,7 +19,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -7,7 +7,7 @@ from app.utils.file_utils import validate_mime_type, save_upload_securely
 from app.services.excel_service import parse_excel
 
 
-router = APIRouter(prefix="/exams", tags=["admin", "exams"])
+router = APIRouter(prefix="/exams", tags=["Exams Management"])
 
 
 @router.post("/import")
@@ -16,6 +16,7 @@ async def import_exam(
     title: str = "",
     institution_id: str | None = None,
     book_id: str | None = None,
+    answer_key_id: str | None = None,
     db: Session = Depends(get_db),
 ):
     if not file.filename:
@@ -47,6 +48,14 @@ async def import_exam(
     db.commit()
     db.refresh(exam)
 
+    if answer_key_id:
+        from app.models import AnswerKey
+
+        answer_key = db.query(AnswerKey).filter(AnswerKey.id == answer_key_id).first()
+        if answer_key:
+            answer_key.exam_id = exam.id
+            db.commit()
+
     return {
         "id": str(exam.id),
         "title": exam.title,
@@ -59,6 +68,9 @@ async def import_exam(
 def list_exams(
     skip: int = 0,
     limit: int = 20,
+    content_type: str | None = Query(
+        None, description="Filter by content_type: book, exam, or answer_key"
+    ),
     institution_id: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -75,6 +87,7 @@ def list_exams(
             {
                 "id": str(e.id),
                 "title": e.title,
+                "content_type": "exam",
                 "sheet_names": e.raw_data.get("sheet_names", []) if e.raw_data else [],
                 "created_at": e.created_at.isoformat() if e.created_at else None,
             }

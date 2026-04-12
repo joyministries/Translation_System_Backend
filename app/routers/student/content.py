@@ -7,14 +7,14 @@ from app.utils.security import require_role
 from app.models.user import User
 
 
-router = APIRouter(prefix="/content", tags=["student", "content"])
+router = APIRouter(prefix="/content", tags=["Student Content"])
 
 
 @router.get("/languages")
 def list_languages(
     skip: int = 0,
     limit: int = 100,
-    current_user: User = Depends(require_role("student")),
+    current_user: User = Depends(require_role("student", "admin")),
     db: Session = Depends(get_db),
 ):
     languages = (
@@ -43,10 +43,10 @@ def list_languages(
 def list_books(
     skip: int = 0,
     limit: int = 20,
-    current_user: User = Depends(require_role("student")),
+    current_user: User = Depends(require_role("student", "admin")),
     db: Session = Depends(get_db),
 ):
-    query = db.query(Book).filter(Book.extraction_status == "completed")
+    query = db.query(Book).filter(Book.extraction_status == "done")
     total = query.count()
     books = query.offset(skip).limit(limit).all()
 
@@ -68,7 +68,7 @@ def list_books(
 @router.get("/books/{book_id}")
 def get_book(
     book_id: str,
-    current_user: User = Depends(require_role("student")),
+    current_user: User = Depends(require_role("student", "admin")),
     db: Session = Depends(get_db),
 ):
     from app.models import Institution
@@ -100,7 +100,7 @@ def get_book(
 def list_exams(
     skip: int = 0,
     limit: int = 20,
-    current_user: User = Depends(require_role("student")),
+    current_user: User = Depends(require_role("student", "admin")),
     db: Session = Depends(get_db),
 ):
     query = db.query(Exam)
@@ -124,7 +124,7 @@ def list_exams(
 @router.get("/exams/{exam_id}")
 def get_exam(
     exam_id: str,
-    current_user: User = Depends(require_role("student")),
+    current_user: User = Depends(require_role("student", "admin")),
     db: Session = Depends(get_db),
 ):
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
@@ -145,7 +145,7 @@ def get_exam(
 def list_answer_keys(
     skip: int = 0,
     limit: int = 20,
-    current_user: User = Depends(require_role("student")),
+    current_user: User = Depends(require_role("student", "admin")),
     db: Session = Depends(get_db),
 ):
     query = db.query(AnswerKey)
@@ -169,7 +169,7 @@ def list_answer_keys(
 @router.get("/answer-keys/{answer_key_id}")
 def get_answer_key(
     answer_key_id: str,
-    current_user: User = Depends(require_role("student")),
+    current_user: User = Depends(require_role("student", "admin")),
     db: Session = Depends(get_db),
 ):
     answer_key = db.query(AnswerKey).filter(AnswerKey.id == answer_key_id).first()

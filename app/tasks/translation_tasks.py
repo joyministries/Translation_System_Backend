@@ -1,49 +1,28 @@
+import json
 import logging
 import uuid
 from datetime import datetime
 
 import requests
 from celery import Task
-from deep_translator import GoogleTranslator
 
 from app.tasks.celery_app import celery_app
 from app.database import SessionLocal
 from app.models import Language
 from app.utils.text_chunker import chunk_text, merge_chunks
 
-
 logger = logging.getLogger(__name__)
 
-TRANSLATION_ENGINE = "libretranslate"
+TRANSLATION_ENGINE = "google_translate"
 
 
 def translate_chunk(text: str, source_lang: str, target_lang: str) -> str:
-    global TRANSLATION_ENGINE
     from app.config import settings
 
     try:
-        response = requests.post(
-            f"{settings.LIBRETRANSLATE_URL}/translate",
-            json={
-                "q": text,
-                "source": source_lang,
-                "target": target_lang,
-                "format": "text",
-            },
-            timeout=30,
-        )
-        if response.status_code == 200:
-            data = response.json()
-            TRANSLATION_ENGINE = "libretranslate"
-            return data.get("translatedText", text)
-    except Exception as e:
-        logger.warning(f"LibreTranslate failed: {e}")
-
-    logger.info("Falling back to Google Cloud Translation API")
-    try:
         if settings.GOOGLE_CLOUD_API_KEY:
             cloud_response = requests.get(
-                f"https://translation.googleapis.com/language/translate/v2",
+                "https://translation.googleapis.com/language/translate/v2",
                 params={
                     "key": settings.GOOGLE_CLOUD_API_KEY,
                     "q": text[:5000],
@@ -51,25 +30,54 @@ def translate_chunk(text: str, source_lang: str, target_lang: str) -> str:
                     "target": target_lang,
                     "format": "text",
                 },
-                timeout=30,
+                timeout=60,
             )
             if cloud_response.status_code == 200:
                 data = cloud_response.json()
                 if data.get("data", {}).get("translations"):
-                    TRANSLATION_ENGINE = "google_cloud"
+                    logger.info(
+                        f"Translated using Google Translate {source_lang} -> {target_lang}"
+                    )
                     return data["data"]["translations"][0]["translatedText"]
-    except Exception as gce:
-        logger.warning(f"Google Cloud API failed: {gce}")
+    except Exception as e:
+        logger.warning(f"Google Translate failed: {e}")
 
-    logger.info("Falling back to Google Translate (free)")
+    logger.error("Translation failed - no API available")
+    return text
+
+
+def _translate_excel_json(original_text: str, source_lang: str, target_lang: str) -> str:
+    """Translate only cell values in the Excel JSON, preserving structure."""
     try:
-        translator = GoogleTranslator(source=source_lang, target=target_lang)
-        result = translator.translate(text)
-        TRANSLATION_ENGINE = "google_free"
-        return result
-    except Exception as ge:
-        logger.error(f"Google Translate also failed: {ge}")
-        raise
+        data = json.loads(original_text)
+    except Exception:
+        return original_text
+
+    sheets = data.get("sheets") or {}
+    sheet_names = data.get("sheet_names") or list(sheets.keys())
+
+    translated_sheets = {}
+    translated_sheet_names = []
+    for sheet_name in sheet_names:
+        translated_name = translate_chunk(sheet_name, source_lang, target_lang)
+        translated_sheet_names.append(translated_name)
+        rows = sheets.get(sheet_name, [])
+        translated_rows = []
+        for row in rows:
+            translated_row = []
+            for cell in row:
+                if cell and str(cell).strip():
+                    translated_row.append(translate_chunk(str(cell), source_lang, target_lang))
+                else:
+                    translated_row.append(cell)
+            translated_rows.append(translated_row)
+        translated_sheets[translated_name] = translated_rows
+
+    return json.dumps({
+        "sheet_names": sheet_names,           # original names (for workbook mapping)
+        "translated_sheet_names": translated_sheet_names,
+        "sheets": translated_sheets,
+    })
 
 
 class TranslationTask(Task):
@@ -88,9 +96,6 @@ def translate_content(
     source_language_id: int | None = None,
 ):
     logger.info(f"Translation task started: {translation_id}")
-    logger.info(
-        f"Language ID: {language_id}, Source Language ID: {source_language_id}, Text length: {len(original_text)}"
-    )
 
     db = SessionLocal()
     try:
@@ -115,16 +120,27 @@ def translate_content(
 
         logger.info(f"Translating from {source_lang_code} to {target_lang_code}")
 
-        chunks = chunk_text(original_text)
-        logger.info(f"Split into {len(chunks)} chunks")
+        # Check if this is an exam (JSON with sheets structure) — translate cells, not raw JSON
+        is_excel = False
+        try:
+            parsed = json.loads(original_text)
+            if isinstance(parsed, dict) and ("sheets" in parsed or "makaratasi" in parsed):
+                is_excel = True
+        except Exception:
+            pass
 
-        translated_chunks = []
-        for i, chunk in enumerate(chunks):
-            logger.info(f"Translating chunk {i + 1}/{len(chunks)}")
-            translated = translate_chunk(chunk, source_lang_code, target_lang_code)
-            translated_chunks.append(translated)
-
-        translated_text = merge_chunks(translated_chunks)
+        if is_excel:
+            translated_text = _translate_excel_json(original_text, source_lang_code, target_lang_code)
+            chunks = [original_text]  # for chunk_count
+        else:
+            chunks = chunk_text(original_text)
+            logger.info(f"Split into {len(chunks)} chunks")
+            translated_chunks = []
+            for i, chunk in enumerate(chunks):
+                logger.info(f"Translating chunk {i + 1}/{len(chunks)}")
+                translated = translate_chunk(chunk, source_lang_code, target_lang_code)
+                translated_chunks.append(translated)
+            translated_text = merge_chunks(translated_chunks)
 
         translation = (
             db.query(Translation)
@@ -134,7 +150,7 @@ def translate_content(
         if translation:
             translation.translated_text = translated_text
             translation.status = "done"
-            translation.translation_engine = TRANSLATION_ENGINE
+            translation.translation_engine = "google_translate"
             translation.chunk_count = len(chunks)
             db.commit()
 

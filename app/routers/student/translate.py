@@ -1,31 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models import Book, Exam, User
+from app.utils.security import require_role
 from app.services.translation_service import TranslationService
-from app.models import Book
-from app.utils.security import require_role, get_current_user
-from app.models.user import User
 
 
-router = APIRouter(prefix="/translate", tags=["student", "translate"])
+router = APIRouter(prefix="/translate", tags=["Translations"])
 
 
 @router.post("")
 async def trigger_translation(
-    content_type: str = "book",
-    content_id: str = None,
-    language_id: int = None,
-    source_language_id: int = 1,
+    content_type: str,
+    content_id: str,
+    language_id: int,
+    source_language_id: int | None = None,
     output_format: str = "pdf",
     current_user: User = Depends(require_role("admin", "student")),
     db: Session = Depends(get_db),
 ):
-    if not content_id or not language_id:
-        raise HTTPException(
-            status_code=400, detail="content_id and language_id are required"
-        )
-
     if content_type == "book":
         book = db.query(Book).filter(Book.id == content_id).first()
         if not book:
@@ -53,6 +48,7 @@ async def trigger_translation(
 
     if content_type == "exam":
         from app.models import Exam
+        import json
 
         exam = db.query(Exam).filter(Exam.id == content_id).first()
         if not exam:
@@ -60,8 +56,6 @@ async def trigger_translation(
 
         if not exam.raw_data:
             raise HTTPException(status_code=400, detail="Exam has no data")
-
-        import json
 
         exam_text = json.dumps(exam.raw_data)
 
@@ -172,47 +166,32 @@ def download_translation(
     media_type = "application/pdf"
     filename = f"translation_{translation_id}.pdf"
 
-    if format == "xlsx" or translation.content_type == "exam":
-        if translation.content_type == "exam":
-            from app.models import Exam
+    if translation.content_type == "exam" and format == "xlsx":
+        from app.models import Exam
 
-            exam = db.query(Exam).filter(Exam.id == str(translation.content_id)).first()
-            if exam and exam.file_path:
-                from app.services.doc_service import translate_excel_from_json
+        exam = db.query(Exam).filter(Exam.id == str(translation.content_id)).first()
+        if exam and exam.file_path:
+            from app.services.doc_service import translate_excel_from_json
 
-                content = translate_excel_from_json(
-                    exam.file_path, translation.translated_text
-                )
-                media_type = (
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                filename = f"translation_{translation_id}.xlsx"
-            else:
-                content = text.encode("utf-8")
-                media_type = "text/plain"
-                filename = f"translation_{translation_id}.txt"
-        else:
-            book = db.query(Book).filter(Book.id == str(translation.content_id)).first()
-            if (
-                book
-                and book.file_path
-                and (
-                    book.file_path.endswith(".xlsx") or book.file_path.endswith(".xls")
-                )
-            ):
-                from app.services.doc_service import translate_excel_from_json
+            content = translate_excel_from_json(
+                exam.file_path, translation.translated_text
+            )
+            media_type = (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            filename = f"translation_{translation_id}.xlsx"
+    elif format == "xlsx":
+        book = db.query(Book).filter(Book.id == str(translation.content_id)).first()
+        if book and book.file_path and book.file_path.endswith((".xlsx", ".xls")):
+            from app.services.doc_service import translate_excel_from_json
 
-                content = translate_excel_from_json(
-                    book.file_path, translation.translated_text
-                )
-                media_type = (
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                filename = f"translation_{translation_id}.xlsx"
-            else:
-                content = text.encode("utf-8")
-                media_type = "text/plain"
-                filename = f"translation_{translation_id}.txt"
+            content = translate_excel_from_json(
+                book.file_path, translation.translated_text
+            )
+            media_type = (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            filename = f"translation_{translation_id}.xlsx"
     elif format == "docx":
         from app.services.doc_service import create_translated_docx
 
@@ -222,22 +201,53 @@ def download_translation(
         )
         filename = f"translation_{translation_id}.docx"
     else:
-        from reportlab.lib.pagesizes import letter
-        from reportlab.lib.styles import getSampleStyleSheet
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        from reportlab.lib.pagesizes import letter, A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        from reportlab.lib import colors
         import io
 
         buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            leftMargin=0.75 * inch,
+            rightMargin=0.75 * inch,
+            topMargin=0.75 * inch,
+            bottomMargin=0.75 * inch,
+        )
         styles = getSampleStyleSheet()
-        story = []
 
-        paragraphs = text.split("\n")
-        for para in paragraphs:
+        title_style = ParagraphStyle(
+            "CustomTitle",
+            parent=styles["Heading1"],
+            fontSize=16,
+            spaceAfter=12,
+            textColor=colors.black,
+        )
+        heading_style = ParagraphStyle(
+            "CustomHeading",
+            parent=styles["Heading2"],
+            fontSize=12,
+            spaceAfter=6,
+            textColor=colors.darkblue,
+        )
+        body_style = ParagraphStyle(
+            "CustomBody", parent=styles["Normal"], fontSize=10, spaceAfter=6, leading=14
+        )
+
+        story = []
+        story.append(Paragraph("Translation Document", title_style))
+        story.append(Spacer(1, 0.3 * inch))
+
+        for para in text.split("\n"):
             if para.strip():
-                story.append(Paragraph(para, styles["Normal"]))
-                story.append(Spacer(1, 0.2 * inch))
+                if len(para) < 50 or para.rstrip().endswith(":"):
+                    story.append(Paragraph(para, heading_style))
+                else:
+                    story.append(Paragraph(para, body_style))
+                story.append(Spacer(1, 0.1 * inch))
 
         doc.build(story)
         buffer.seek(0)

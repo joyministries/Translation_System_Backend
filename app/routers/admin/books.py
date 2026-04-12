@@ -1,14 +1,14 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Book
 from app.utils.file_utils import validate_mime_type, save_upload_securely
-from app.utils.security import require_role, get_current_user
+from app.utils.security import require_role
 from app.models.user import User
 
 
-router = APIRouter(prefix="/books", tags=["admin", "books"])
+router = APIRouter(prefix="/books", tags=["Books Management"])
 
 
 @router.post("/upload")
@@ -22,6 +22,11 @@ async def upload_book(
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
+    """
+    Upload a book (PDF, DOC, DOCX).
+    - content_type: 'book' (default) - for study materials
+    - For exams, use /admin/exams/import instead
+    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
@@ -80,6 +85,9 @@ async def upload_book(
 def list_books(
     skip: int = 0,
     limit: int = 20,
+    content_type: str | None = Query(
+        None, description="Filter by content_type: book, exam, or answer_key"
+    ),
     institution_id: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -99,6 +107,7 @@ def list_books(
                 "subject": b.subject,
                 "grade_level": b.grade_level,
                 "page_count": b.page_count,
+                "content_type": "book",
                 "extraction_status": b.extraction_status,
                 "created_at": b.created_at.isoformat() if b.created_at else None,
             }

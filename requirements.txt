@@ -5,6 +5,7 @@ alembic
 psycopg2-binary
 pymupdf
 openpyxl
+xlrd
 celery[redis]
 flower
 redis

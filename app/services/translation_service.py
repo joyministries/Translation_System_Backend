@@ -67,8 +67,8 @@ class TranslationService:
             task = translate_content.delay(
                 str(translation.id),
                 original_text,
-                str(language_id),
-                str(source_language_id) if source_language_id else None,
+                int(language_id),
+                int(source_language_id) if source_language_id else None,
             )
 
             job = TranslationJob(
