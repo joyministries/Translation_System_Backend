@@ -2,15 +2,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
-    DATABASE_URL: str
-    REDIS_URL: str
-    SECRET_KEY: str
-    LIBRETRANSLATE_URL: str
-    STORAGE_ROOT: str
-    DB_PASSWORD: str
-    REDIS_PASSWORD: str
+    DATABASE_URL: str = ""
+    REDIS_URL: str = ""
+    SECRET_KEY: str = ""
+    LIBRETRANSLATE_URL: str = "https://libretranslate.com"
+    STORAGE_ROOT: str = "/app/storage"
+    DB_PASSWORD: str = ""
+    REDIS_PASSWORD: str = ""
     GOOGLE_CLOUD_API_KEY: str | None = None
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
