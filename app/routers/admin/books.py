@@ -34,7 +34,7 @@ async def upload_book(
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    mime_type = validate_mime_type(file_bytes)
+    mime_type = validate_mime_type(file_bytes, file.filename or "")
     if not mime_type:
         raise HTTPException(
             status_code=400, detail="Invalid file type. Only PDF, DOC, DOCX allowed."

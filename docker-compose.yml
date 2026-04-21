@@ -66,6 +66,9 @@ services:
     volumes:
       - ./storage:/app/storage
       - ./.env:/app/.env:ro
+      - /usr/bin/libreoffice:/usr/bin/libreoffice:ro
+      - /usr/lib/libreoffice:/usr/lib/libreoffice:ro
+      - /usr/share/libreoffice:/usr/share/libreoffice:ro
     depends_on:
       db:
         condition: service_healthy

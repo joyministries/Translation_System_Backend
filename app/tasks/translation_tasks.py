@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import uuid
 from datetime import datetime
 
@@ -10,6 +11,7 @@ from app.tasks.celery_app import celery_app
 from app.database import SessionLocal
 from app.models import Language
 from app.utils.text_chunker import chunk_text, merge_chunks
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -153,10 +155,10 @@ def translate_content(
         from app.models import Translation, TranslationJob, Language
 
         target_language = db.query(Language).filter(Language.id == language_id).first()
-        if not target_language or not target_language.libretranslate_code:
-            raise ValueError(
-                f"Invalid language or missing libretranslate_code for language_id: {language_id}"
-            )
+        if not target_language:
+            raise ValueError(f"Invalid language_id: {language_id}")
+
+        target_lang_code = target_language.libretranslate_code or target_language.code
 
         source_language = None
         if source_language_id:
@@ -167,7 +169,6 @@ def translate_content(
         source_lang_code = (
             source_language.libretranslate_code if source_language else "en"
         )
-        target_lang_code = target_language.libretranslate_code or target_language.code
 
         logger.info(f"Translating from {source_lang_code} to {target_lang_code}")
 
@@ -184,10 +185,24 @@ def translate_content(
             translated_text = _translate_excel_json(original_text, source_lang_code, target_lang_code)
             chunks = [original_text]  # for chunk_count
         else:
-            chunks = chunk_text(original_text)
-            logger.info(f"Split into {len(chunks)} chunks")
-            results = _batch_translate(chunks, source_lang_code, target_lang_code)
-            translated_text = merge_chunks(results)
+            # Translate line by line to preserve structure
+            lines = original_text.split("\n")
+            non_empty_lines = [(i, l) for i, l in enumerate(lines) if l.strip()]
+            chunks = non_empty_lines  # for chunk_count
+
+            # Batch translate only non-empty lines
+            BATCH = 100
+            translated_map = {}
+            texts = [l for _, l in non_empty_lines]
+            for i in range(0, len(texts), BATCH):
+                batch = texts[i:i+BATCH]
+                results = _batch_translate(batch, source_lang_code, target_lang_code)
+                for (idx, _), trans in zip(non_empty_lines[i:i+BATCH], results):
+                    translated_map[idx] = trans
+
+            # Rebuild with same line structure
+            translated_lines = [translated_map.get(i, l) for i, l in enumerate(lines)]
+            translated_text = "\n".join(translated_lines)
 
         translation = (
             db.query(Translation)
@@ -209,6 +224,99 @@ def translate_content(
         if job:
             job.completed_at = datetime.utcnow()
             db.commit()
+
+        # Pre-generate cached PDF for .docx books so downloads are instant
+        if translation and translation.content_type == "book" and not is_excel:
+            try:
+                from app.models import Book
+                book = db.query(Book).filter(Book.id == translation.content_id).first()
+                if book and book.file_path and book.file_path.endswith(".docx"):
+                    cached_pdf_key = book.file_path.replace(".docx", f"_translated_{translation.language_id}.pdf")
+                    cached_pdf_path = f"{settings.STORAGE_ROOT}/{cached_pdf_key}"
+                    if not os.path.exists(cached_pdf_path):
+                        from reportlab.lib.pagesizes import A4
+                        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+                        from reportlab.lib.styles import ParagraphStyle
+                        from reportlab.lib.units import inch
+                        from reportlab.pdfbase import pdfmetrics
+                        from reportlab.pdfbase.ttfonts import TTFont
+                        import io as _io, fitz as _fitz
+
+                        from docx import Document
+
+                        pdfmetrics.registerFont(TTFont("DejaVu", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+                        pdfmetrics.registerFont(TTFont("DejaVu-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+
+                        title_style = ParagraphStyle("t",  fontName="DejaVu-Bold", fontSize=16, spaceAfter=10, leading=20, alignment=1)
+                        h1_style    = ParagraphStyle("h1", fontName="DejaVu-Bold", fontSize=14, spaceAfter=8,  leading=18, spaceBefore=10)
+                        h2_style    = ParagraphStyle("h2", fontName="DejaVu-Bold", fontSize=12, spaceAfter=6,  leading=16, spaceBefore=6)
+                        h3_style    = ParagraphStyle("h3", fontName="DejaVu-Bold", fontSize=11, spaceAfter=4,  leading=14, spaceBefore=4)
+                        list_style  = ParagraphStyle("li", fontName="DejaVu",      fontSize=10, spaceAfter=3,  leading=13, leftIndent=20)
+                        body_style  = ParagraphStyle("b",  fontName="DejaVu",      fontSize=10, spaceAfter=4,  leading=14)
+
+                        # Build translation map from translated_text lines
+                        trans_lines = [l for l in translated_text.split("\n") if l.strip()]
+                        trans_iter = iter(trans_lines)
+
+                        # Read original docx paragraphs for structure
+                        with open(f"{settings.STORAGE_ROOT}/{book.file_path}", "rb") as f:
+                            orig_doc = Document(f)
+
+                        non_empty = [p for p in orig_doc.paragraphs if p.text.strip()]
+                        # Last 5 non-empty paras = last page contact info (keep in English)
+                        last_page_texts = {p.text.strip() for p in non_empty[-5:]}
+
+                        buf = _io.BytesIO()
+                        pdf = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=0.75*inch, rightMargin=0.75*inch,
+                            topMargin=0.75*inch, bottomMargin=0.75*inch)
+                        story = []
+
+                        for para in orig_doc.paragraphs:
+                            orig_text = para.text.strip()
+                            if not orig_text:
+                                story.append(Spacer(1, 0.08*inch))
+                                continue
+
+                            sname = para.style.name.lower() if para.style else ""
+
+                            # Keep last page in original English
+                            text = orig_text if orig_text in last_page_texts else next(trans_iter, orig_text)
+                            safe = text.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+
+                            if "title" in sname:
+                                story.append(Paragraph(safe, title_style))
+                            elif "heading 1" in sname:
+                                story.append(Paragraph(safe, h1_style))
+                            elif "heading 2" in sname:
+                                story.append(Paragraph(safe, h2_style))
+                            elif "heading 3" in sname:
+                                story.append(Paragraph(safe, h3_style))
+                            elif "list" in sname:
+                                story.append(Paragraph(f"• {safe}", list_style))
+                            else:
+                                story.append(Paragraph(safe, body_style))
+
+                        pdf.build(story)
+
+                        # Prepend cover image
+                        cover_path = f"{settings.STORAGE_ROOT}/{book.file_path.replace('.docx', '_cover.png')}"
+                        if os.path.exists(cover_path):
+                            body_doc = _fitz.open("pdf", buf.getvalue())
+                            cover_pix = _fitz.Pixmap(cover_path)
+                            cover_page = body_doc.new_page(0, width=cover_pix.width/2, height=cover_pix.height/2)
+                            cover_page.insert_image(cover_page.rect, pixmap=cover_pix)
+                            final_buf = _io.BytesIO()
+                            body_doc.save(final_buf)
+                            final_bytes = final_buf.getvalue()
+                        else:
+                            final_bytes = buf.getvalue()
+
+                        with open(cached_pdf_path, "wb") as f:
+                            f.write(final_bytes)
+                        logger.info(f"Cached PDF generated: {cached_pdf_path}")
+            except Exception as e:
+                logger.warning(f"Pre-generation of cached PDF failed: {e}")
 
         logger.info(f"Translation task completed: {translation_id}")
         return {"status": "success", "translation_id": translation_id}

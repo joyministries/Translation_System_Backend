@@ -228,9 +228,76 @@ Authorization: Bearer <access_token>
 
 ---
 
-## Admin Endpoints
+## User Management (Admin Only)
 
-### List Books
+### Create User
+```bash
+POST /admin/users
+Authorization: Bearer <admin_token>
+Content-Type: application/json
+
+# Option 1: With temp password (recommended)
+{
+  "email": "user@example.com",
+  "role": "student",
+  "use_temp_password": true,
+  "institution_id": "uuid-optional"
+}
+
+# Option 2: With explicit password
+{
+  "email": "user@example.com",
+  "role": "teacher",
+  "password": "Pass123!"
+}
+```
+
+**Roles:** `student`, `teacher`, `admin`, `translator`
+
+**Response:**
+```json
+{
+  "id": "uuid",
+  "email": "user@example.com",
+  "role": "student",
+  "must_change_password": true,
+  "temp_password": "xGUjCLpIMlzd"
+}
+```
+> `temp_password` is only returned when `use_temp_password: true`. Share it with the user — they must change it on first login.
+
+### List Users
+```bash
+GET /admin/users?role=student&institution_id=uuid
+Authorization: Bearer <admin_token>
+```
+
+### Reset User Password (Admin)
+```bash
+POST /auth/reset-password?user_id=<user_uuid>
+Authorization: Bearer <admin_token>
+```
+
+**Response:**
+```json
+{
+  "message": "Password reset. Temporary password: O4U6FBCSbFzx"
+}
+```
+
+### Change Own Password
+```bash
+POST /auth/change-password
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "old_password": "OldPass123",
+  "new_password": "NewPass456"
+}
+```
+
+---
 ```bash
 GET /admin/books/
 Authorization: Bearer <admin_token>

@@ -14,9 +14,12 @@ router = APIRouter(prefix="/users", tags=["User Management"])
 
 class CreateUserRequest(BaseModel):
     email: str
-    password: str
+    password: str | None = None
     role: str
     institution_id: str | None = None
+    use_temp_password: bool = False
+    first_name: str | None = None
+    last_name: str | None = None
 
 
 @router.post("")
@@ -25,30 +28,32 @@ def create_user(
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    email = request.email
-    password = request.password
-    role = request.role
-    institution_id = request.institution_id
-    if role not in ["student", "teacher", "admin"]:
+    if request.role not in ["student", "teacher", "admin", "translator"]:
         raise HTTPException(status_code=400, detail="Invalid role")
 
-    existing = AuthService.get_user_by_email(db, email)
+    existing = AuthService.get_user_by_email(db, request.email)
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
     inst_id = None
-    if institution_id:
+    if request.institution_id:
         try:
-            inst_id = uuid.UUID(institution_id)
+            inst_id = uuid.UUID(request.institution_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid institution_id")
 
-    user = AuthService.register(db, email, password, role, inst_id)
+    if request.use_temp_password or not request.password:
+        user, temp_password = AuthService.register_with_temp_password(db, request.email, request.role, inst_id)
+    else:
+        user = AuthService.register(db, request.email, request.password, request.role, inst_id)
+        temp_password = None
 
     return {
         "id": str(user.id),
         "email": user.email,
         "role": user.role,
+        "must_change_password": user.must_change_password,
+        "temp_password": temp_password,
     }
 
 

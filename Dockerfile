@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     libmagic1 \
     poppler-utils \
     catdoc \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

@@ -13,6 +13,7 @@ from app.schemas.auth import (
     ChangePasswordRequest,
 )
 from app.services.auth_service import AuthService
+from app.services.email_service import EmailService
 from app.utils.security import (
     get_current_user,
     require_role,
@@ -38,12 +39,11 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     access_token, refresh_token = AuthService.create_tokens(user)
     AuthService.update_last_login(db, user.id)
 
-    if user.must_change_password:
-        return TokenResponse(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            must_change_password=True,
-        )
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        must_change_password=bool(user.must_change_password),
+    )
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -183,3 +183,30 @@ def change_password(
     db.commit()
 
     return MessageResponse(message="Password changed successfully")
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+def reset_password(
+    user_id: str,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Admin resets a user's password to a new temporary password."""
+    try:
+        user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    temp_password = AuthService.generate_temp_password()
+    user.hashed_password = get_password_hash(temp_password)
+    user.must_change_password = True
+    db.commit()
+
+    EmailService.send_welcome_email(user.email, temp_password)
+
+    return MessageResponse(
+        message=f"Password reset. Temporary password sent to {user.email}"
+    )

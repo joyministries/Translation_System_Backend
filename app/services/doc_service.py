@@ -50,7 +50,11 @@ def translate_excel_from_json(original_file_path: str, translated_json: str) -> 
 
         # sheets_data keys are translated names — map back to original workbook sheet names
         # original_names[i] -> workbook sheet, translated_names[i] -> sheets_data key
-        if original_names and translated_names and len(original_names) == len(translated_names):
+        if (
+            original_names
+            and translated_names
+            and len(original_names) == len(translated_names)
+        ):
             name_map = dict(zip(original_names, translated_names))
         else:
             # fallback: keys match workbook names directly
@@ -156,8 +160,24 @@ def create_translated_pdf(text: str) -> bytes:
     return buffer.getvalue()
 
 
-def create_translated_docx(text: str) -> bytes:
+def create_translated_docx(text: str, cover_text: str = None) -> bytes:
+    from docx.shared import Pt
+
     doc = Document()
+
+    # Add cover page first if provided
+    if cover_text:
+        for para in cover_text.split("\n"):
+            if para.strip():
+                p = doc.add_paragraph(para)
+                # Make cover text bold
+                for run in p.runs:
+                    run.font.bold = True
+                    run.font.size = Pt(14)
+        # Add page break after cover
+        doc.add_page_break()
+
+    # Add translated content
     for para in text.split("\n"):
         if para.strip():
             doc.add_paragraph(para)

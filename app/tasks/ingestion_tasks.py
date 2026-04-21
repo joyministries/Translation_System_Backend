@@ -57,17 +57,60 @@ def extract_doc_text(self, book_id: str, file_path: str):
         db.commit()
 
         full_path = get_file_path(file_path)
+        start_page = book.first_content_page or 1
 
-        text = ""
+        cover_text = ""
+        content_text = ""
+
         if file_path.endswith(".docx"):
             from docx import Document
 
             doc = Document(full_path)
-            text = "\n".join([para.text for para in doc.paragraphs])
-        elif file_path.endswith(".doc"):
-            text = extract_doc_as_text(full_path)
+            all_paragraphs = [
+                para.text.strip() for para in doc.paragraphs if para.text.strip()
+            ]
 
-        book.extracted_text = text
+            if start_page > 1:
+                cover_paragraphs = all_paragraphs[:10]
+                content_paragraphs = all_paragraphs[10:]
+                cover_text = "\n".join(cover_paragraphs)
+                content_text = "\n".join(content_paragraphs)
+            else:
+                content_text = "\n".join(all_paragraphs)
+
+            # Generate cover page image using LibreOffice + fitz
+            try:
+                import subprocess, tempfile, os, fitz
+                cover_img_path = full_path.replace(".docx", "_cover.png")
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    r = subprocess.run(
+                        ["libreoffice", "--headless", "--convert-to", "pdf",
+                         "--outdir", tmpdir, full_path],
+                        capture_output=True, timeout=90
+                    )
+                    pdf_files = [f for f in os.listdir(tmpdir) if f.endswith(".pdf")]
+                    if pdf_files:
+                        pdf_doc = fitz.open(os.path.join(tmpdir, pdf_files[0]))
+                        pix = pdf_doc[0].get_pixmap(matrix=fitz.Matrix(2, 2))
+                        pix.save(cover_img_path)
+                        logger.info(f"Cover image saved: {cover_img_path}")
+            except Exception as e:
+                logger.warning(f"Cover image generation failed: {e}")
+
+        elif file_path.endswith(".doc"):
+            full_text = extract_doc_as_text(full_path)
+            lines = [line.strip() for line in full_text.split("\n") if line.strip()]
+
+            if start_page > 1:
+                cover_lines = lines[:30]
+                content_lines = lines[30:]
+                cover_text = "\n".join(cover_lines)
+                content_text = "\n".join(content_lines)
+            else:
+                content_text = "\n".join(lines)
+
+        book.extracted_text = content_text
+        book.extracted_cover_text = cover_text if cover_text else None
         book.page_count = None
         book.extraction_status = "done"
         db.commit()

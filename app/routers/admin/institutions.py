@@ -31,12 +31,11 @@ def list_institutions(
 
     return {
         "total": total,
-        "items": [
+        "institutions": [
             {
                 "id": str(i.id),
                 "name": i.name,
                 "code": i.code,
-                "created_at": i.created_at.isoformat() if i.created_at else None,
             }
             for i in institutions
         ],

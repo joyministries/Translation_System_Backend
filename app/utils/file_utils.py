@@ -14,18 +14,18 @@ ALLOWED_MIME_TYPES = {
 }
 
 
-def validate_mime_type(file_bytes: bytes) -> str | None:
+def validate_mime_type(file_bytes: bytes, filename: str = "") -> str | None:
     mime = magic.from_buffer(file_bytes[:2048], mime=True)
 
     if mime in ALLOWED_MIME_TYPES:
         return mime
 
-    # OLE compound document - check for Excel vs Word
+    # OLE compound document - .doc and .xls share the same magic bytes
+    # Use filename extension to distinguish
     if file_bytes[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
-        # Check for Excel markers at specific offsets
-        if file_bytes[0x18:0x1C] == b"\x00\x00\x00\x00":
-            return "application/vnd.ms-excel"
-        # Default to Excel for .xls extension files - will be corrected by filename
+        ext = os.path.splitext(filename)[1].lower()
+        if ext == ".doc":
+            return "application/msword"
         return "application/vnd.ms-excel"
 
     return None

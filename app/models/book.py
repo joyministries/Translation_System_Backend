@@ -23,6 +23,7 @@ class Book(Base, UUIDMixin, TimestampMixin):
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extracted_cover_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     extraction_status: Mapped[str] = mapped_column(
         String(20),
         default=ExtractionStatus.PENDING,
