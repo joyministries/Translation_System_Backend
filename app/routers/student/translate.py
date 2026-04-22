@@ -183,20 +183,59 @@ def download_translation(
         book = db.query(Book).filter(Book.id == str(translation.content_id)).first()
         if book and book.file_path and book.file_path.endswith(".pdf"):
             try:
-                from app.services.pdf_translation_service import translate_pdf_preserving_layout
-                from app.tasks.translation_tasks import translate_chunk
-                from app.models import Language
+                import os as _os, io as _io, fitz as _fitz
+                cached_pdf_path = f"/app/storage/{book.file_path.replace('.pdf', f'_translated_{translation.language_id}.pdf')}"
 
-                lang = db.query(Language).filter(Language.id == translation.language_id).first()
-                src_lang = db.query(Language).filter(Language.id == translation.source_language_id).first()
-                target_code = lang.libretranslate_code or lang.code if lang else "sw"
-                source_code = src_lang.libretranslate_code or src_lang.code if src_lang else "en"
+                if _os.path.exists(cached_pdf_path):
+                    with open(cached_pdf_path, "rb") as f:
+                        content = f.read()
+                else:
+                    from reportlab.lib.pagesizes import A4
+                    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+                    from reportlab.lib.styles import ParagraphStyle
+                    from reportlab.lib.units import inch
+                    from reportlab.pdfbase import pdfmetrics
+                    from reportlab.pdfbase.ttfonts import TTFont
 
-                full_path = f"/app/storage/{book.file_path}"
-                content = translate_pdf_preserving_layout(
-                    full_path,
-                    lambda t: translate_chunk(t, source_code, target_code)
-                )
+                    pdfmetrics.registerFont(TTFont("DejaVu", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+                    body_style = ParagraphStyle("b", fontName="DejaVu", fontSize=10, spaceAfter=4, leading=14)
+
+                    # Build translated text pages
+                    buf = _io.BytesIO()
+                    pdf = SimpleDocTemplate(buf, pagesize=A4,
+                        leftMargin=0.75*inch, rightMargin=0.75*inch,
+                        topMargin=0.75*inch, bottomMargin=0.75*inch)
+                    story = []
+                    for line in translation.translated_text.split("\n"):
+                        if line.strip():
+                            safe = line.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+                            story.append(Paragraph(safe, body_style))
+                        else:
+                            story.append(Spacer(1, 0.08*inch))
+                    pdf.build(story)
+
+                    # Prepend first 4 pages from original PDF
+                    orig_path = f"/app/storage/{book.file_path}"
+                    text_doc = _fitz.open("pdf", buf.getvalue())
+                    first_content = book.first_content_page or 5
+                    pages_to_keep = first_content - 1
+
+                    if _os.path.exists(orig_path) and pages_to_keep > 0:
+                        orig_doc = _fitz.open(orig_path)
+                        out = _fitz.open()
+                        # Insert original first pages
+                        out.insert_pdf(orig_doc, from_page=0, to_page=min(pages_to_keep-1, len(orig_doc)-1))
+                        # Append translated text pages
+                        out.insert_pdf(text_doc)
+                        final_buf = _io.BytesIO()
+                        out.save(final_buf)
+                        content = final_buf.getvalue()
+                    else:
+                        content = buf.getvalue()
+
+                    with open(cached_pdf_path, "wb") as f:
+                        f.write(content)
+
                 filename = f"translation_{translation_id}.pdf"
             except Exception as e:
                 import logging

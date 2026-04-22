@@ -263,8 +263,14 @@ def translate_content(
                             orig_doc = Document(f)
 
                         non_empty = [p for p in orig_doc.paragraphs if p.text.strip()]
-                        # Last 5 non-empty paras = last page contact info (keep in English)
+                        # Last 5 non-empty paras = last page (keep in English)
                         last_page_texts = {p.text.strip() for p in non_empty[-5:]}
+                        # First 4 pages worth of paragraphs (keep in English)
+                        first_content_page = book.first_content_page or 5
+                        skip_count = first_content_page - 1  # pages to skip
+                        # Estimate paragraphs per page (~15) to find skip boundary
+                        skip_para_count = skip_count * 15
+                        skip_texts = {p.text.strip() for p in non_empty[:skip_para_count] if p.text.strip()}
 
                         buf = _io.BytesIO()
                         pdf = SimpleDocTemplate(buf, pagesize=A4,
@@ -274,14 +280,42 @@ def translate_content(
 
                         for para in orig_doc.paragraphs:
                             orig_text = para.text.strip()
+
+                            # Handle inline images — embed as image in PDF
+                            has_image = (
+                                para._element.findall('.//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}inline') or
+                                para._element.findall('.//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}anchor')
+                            )
+                            if has_image:
+                                try:
+                                    from reportlab.platypus import Image as RLImage
+                                    DML = "http://schemas.openxmlformats.org/drawingml/2006/main"
+                                    REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                                    for blip in para._element.findall(f'.//{{{DML}}}blip'):
+                                        rId = blip.get(f'{{{REL}}}embed')
+                                        if rId and rId in orig_doc.part.rels:
+                                            img_part = orig_doc.part.rels[rId].target_part
+                                            img_buf = _io.BytesIO(img_part.blob)
+                                            img = RLImage(img_buf, width=4*inch, height=3*inch)
+                                            story.append(img)
+                                            story.append(Spacer(1, 0.1*inch))
+                                except Exception:
+                                    pass
+                                if not orig_text:
+                                    continue
+
                             if not orig_text:
                                 story.append(Spacer(1, 0.08*inch))
                                 continue
 
                             sname = para.style.name.lower() if para.style else ""
 
-                            # Keep last page in original English
-                            text = orig_text if orig_text in last_page_texts else next(trans_iter, orig_text)
+                            # Keep first N pages and last page in original English
+                            if orig_text in last_page_texts or orig_text in skip_texts:
+                                text = orig_text
+                            else:
+                                text = next(trans_iter, orig_text)
+
                             safe = text.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
 
                             if "title" in sname:
@@ -299,18 +333,26 @@ def translate_content(
 
                         pdf.build(story)
 
-                        # Prepend cover image
-                        cover_path = f"{settings.STORAGE_ROOT}/{book.file_path.replace('.docx', '_cover.png')}"
-                        if os.path.exists(cover_path):
-                            body_doc = _fitz.open("pdf", buf.getvalue())
-                            cover_pix = _fitz.Pixmap(cover_path)
+                        # Prepend first N pages as images from original PDF
+                        source_pdf_path = f"{settings.STORAGE_ROOT}/{book.file_path.replace('.docx', '.pdf')}"
+                        body_doc = _fitz.open("pdf", buf.getvalue())
+
+                        if os.path.exists(source_pdf_path):
+                            src_pdf = _fitz.open(source_pdf_path)
+                            pages_to_prepend = min(skip_count, len(src_pdf))
+                            for page_num in range(pages_to_prepend - 1, -1, -1):
+                                pix = src_pdf[page_num].get_pixmap(matrix=_fitz.Matrix(1.5, 1.5))
+                                new_page = body_doc.new_page(0, width=pix.width/1.5, height=pix.height/1.5)
+                                new_page.insert_image(new_page.rect, pixmap=pix)
+                        elif os.path.exists(f"{settings.STORAGE_ROOT}/{book.file_path.replace('.docx', '_cover.png')}"):
+                            # Fallback: just cover image
+                            cover_pix = _fitz.Pixmap(f"{settings.STORAGE_ROOT}/{book.file_path.replace('.docx', '_cover.png')}")
                             cover_page = body_doc.new_page(0, width=cover_pix.width/2, height=cover_pix.height/2)
                             cover_page.insert_image(cover_page.rect, pixmap=cover_pix)
-                            final_buf = _io.BytesIO()
-                            body_doc.save(final_buf)
-                            final_bytes = final_buf.getvalue()
-                        else:
-                            final_bytes = buf.getvalue()
+
+                        final_buf = _io.BytesIO()
+                        body_doc.save(final_buf)
+                        final_bytes = final_buf.getvalue()
 
                         with open(cached_pdf_path, "wb") as f:
                             f.write(final_bytes)

@@ -23,7 +23,7 @@ def translate_pdf_preserving_layout(
         page = doc[page_num]
 
         # Render page to image at 2x resolution for quality
-        mat = fitz.Matrix(2, 2)
+        mat = fitz.Matrix(1, 1)
         pix = page.get_pixmap(matrix=mat)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 

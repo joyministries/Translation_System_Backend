@@ -78,10 +78,11 @@ def extract_doc_text(self, book_id: str, file_path: str):
             else:
                 content_text = "\n".join(all_paragraphs)
 
-            # Generate cover page image using LibreOffice + fitz
+            # Generate cover image + full PDF using LibreOffice
             try:
                 import subprocess, tempfile, os, fitz
                 cover_img_path = full_path.replace(".docx", "_cover.png")
+                pdf_out_path = full_path.replace(".docx", ".pdf")
                 with tempfile.TemporaryDirectory() as tmpdir:
                     r = subprocess.run(
                         ["libreoffice", "--headless", "--convert-to", "pdf",
@@ -90,10 +91,12 @@ def extract_doc_text(self, book_id: str, file_path: str):
                     )
                     pdf_files = [f for f in os.listdir(tmpdir) if f.endswith(".pdf")]
                     if pdf_files:
-                        pdf_doc = fitz.open(os.path.join(tmpdir, pdf_files[0]))
+                        import shutil
+                        shutil.copy(os.path.join(tmpdir, pdf_files[0]), pdf_out_path)
+                        pdf_doc = fitz.open(pdf_out_path)
                         pix = pdf_doc[0].get_pixmap(matrix=fitz.Matrix(2, 2))
                         pix.save(cover_img_path)
-                        logger.info(f"Cover image saved: {cover_img_path}")
+                        logger.info(f"Cover image + PDF saved for {book_id}")
             except Exception as e:
                 logger.warning(f"Cover image generation failed: {e}")
 
