@@ -190,57 +190,74 @@ def download_translation(
                     with open(cached_pdf_path, "rb") as f:
                         content = f.read()
                 else:
-                    from reportlab.lib.pagesizes import A4
-                    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-                    from reportlab.lib.styles import ParagraphStyle
-                    from reportlab.lib.units import inch
-                    from reportlab.pdfbase import pdfmetrics
-                    from reportlab.pdfbase.ttfonts import TTFont
+                    from app.tasks.translation_tasks import _batch_translate
+                    from app.models import Language
 
-                    pdfmetrics.registerFont(TTFont("DejaVu", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
-                    body_style = ParagraphStyle("b", fontName="DejaVu", fontSize=10, spaceAfter=4, leading=14)
+                    lang = db.query(Language).filter(Language.id == translation.language_id).first()
+                    src_lang = db.query(Language).filter(Language.id == translation.source_language_id).first()
+                    target_code = lang.libretranslate_code or lang.code if lang else "sw"
+                    source_code = src_lang.libretranslate_code or src_lang.code if src_lang else "en"
 
-                    # Build translated text pages
+                    doc = _fitz.open(f"/app/storage/{book.file_path}")
+
+                    for page_num, page in enumerate(doc):
+                        if page_num == 0:
+                            continue
+
+                        blocks = page.get_text("dict")["blocks"]
+                        text_blocks = []
+                        for b in blocks:
+                            if b.get("type") != 0:
+                                continue
+                            text = "".join(span["text"] for line in b.get("lines",[]) for span in line.get("spans",[]))
+                            if not text.strip():
+                                continue
+                            # Get font info from first span
+                            first_span = b["lines"][0]["spans"][0] if b.get("lines") and b["lines"][0].get("spans") else {}
+                            fontsize = first_span.get("size", 10)
+                            is_bold = "Bold" in first_span.get("font", "")
+                            bbox = b["bbox"]
+                            text_blocks.append((bbox, text.strip(), fontsize, is_bold))
+
+                        if not text_blocks:
+                            continue
+
+                        texts = [t for _,t,_,_ in text_blocks]
+                        translated = _batch_translate(texts, source_code, target_code)
+
+                        for (bbox, _, fontsize, is_bold), trans in zip(text_blocks, translated):
+                            rect = _fitz.Rect(bbox)
+                            page.add_redact_annot(rect, fill=(1,1,1))
+                            page.apply_redactions()
+                            fontname = "helv-bold" if is_bold else "helv"
+                            # Register DejaVu fonts for bold support
+                            try:
+                                if is_bold:
+                                    page.insert_font(fontname="DejaVuB", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+                                    fontname = "DejaVuB"
+                                else:
+                                    page.insert_font(fontname="DejaVu", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+                                    fontname = "DejaVu"
+                            except Exception:
+                                fontname = "helv"
+                            for fs in [fontsize, fontsize*0.8, fontsize*0.6, 7]:
+                                result = page.insert_textbox(rect, trans, fontsize=fs, fontname=fontname, color=(0,0,0))
+                                if result >= 0:
+                                    break
+                            else:
+                                page.insert_text((rect.x0, rect.y0 + fontsize), trans, fontsize=7, fontname=fontname, color=(0,0,0))
+
                     buf = _io.BytesIO()
-                    pdf = SimpleDocTemplate(buf, pagesize=A4,
-                        leftMargin=0.75*inch, rightMargin=0.75*inch,
-                        topMargin=0.75*inch, bottomMargin=0.75*inch)
-                    story = []
-                    for line in translation.translated_text.split("\n"):
-                        if line.strip():
-                            safe = line.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-                            story.append(Paragraph(safe, body_style))
-                        else:
-                            story.append(Spacer(1, 0.08*inch))
-                    pdf.build(story)
-
-                    # Prepend first 4 pages from original PDF
-                    orig_path = f"/app/storage/{book.file_path}"
-                    text_doc = _fitz.open("pdf", buf.getvalue())
-                    first_content = book.first_content_page or 5
-                    pages_to_keep = first_content - 1
-
-                    if _os.path.exists(orig_path) and pages_to_keep > 0:
-                        orig_doc = _fitz.open(orig_path)
-                        out = _fitz.open()
-                        # Insert original first pages
-                        out.insert_pdf(orig_doc, from_page=0, to_page=min(pages_to_keep-1, len(orig_doc)-1))
-                        # Append translated text pages
-                        out.insert_pdf(text_doc)
-                        final_buf = _io.BytesIO()
-                        out.save(final_buf)
-                        content = final_buf.getvalue()
-                    else:
-                        content = buf.getvalue()
-
+                    doc.save(buf, deflate=True, garbage=4)
+                    content = buf.getvalue()
                     with open(cached_pdf_path, "wb") as f:
                         f.write(content)
 
                 filename = f"translation_{translation_id}.pdf"
             except Exception as e:
                 import logging
-                logging.getLogger(__name__).warning(f"Layout PDF failed, falling back: {e}")
-                content = None  # fall through to plain PDF
+                logging.getLogger(__name__).warning(f"PDF translation failed: {e}")
+                content = None
 
         # .docx translation — translated text as formatted PDF
         elif book and book.file_path and book.file_path.endswith(".docx"):
