@@ -190,15 +190,18 @@ def download_translation(
                     with open(cached_pdf_path, "rb") as f:
                         content = f.read()
                 else:
-                    from app.tasks.translation_tasks import _batch_translate
                     from app.models import Language
-
                     lang = db.query(Language).filter(Language.id == translation.language_id).first()
                     src_lang = db.query(Language).filter(Language.id == translation.source_language_id).first()
                     target_code = lang.libretranslate_code or lang.code if lang else "sw"
                     source_code = src_lang.libretranslate_code or src_lang.code if src_lang else "en"
 
-                    doc = _fitz.open(f"/app/storage/{book.file_path}")
+                    with open(f"/app/storage/{book.file_path}", "rb") as _f:
+                        doc = _fitz.open("pdf", _f.read())
+
+                    # Use pre-translated lines from DB — no API calls
+                    trans_lines = [l for l in translation.translated_text.split("\n") if l.strip()]
+                    trans_iter = iter(trans_lines)
 
                     for page_num, page in enumerate(doc):
                         if page_num == 0:
@@ -223,7 +226,7 @@ def download_translation(
                             continue
 
                         texts = [t for _,t,_,_ in text_blocks]
-                        translated = _batch_translate(texts, source_code, target_code)
+                        translated = [next(trans_iter, t) for t in texts]
 
                         for (bbox, _, fontsize, is_bold), trans in zip(text_blocks, translated):
                             rect = _fitz.Rect(bbox)
@@ -246,6 +249,54 @@ def download_translation(
                                     break
                             else:
                                 page.insert_text((rect.x0, rect.y0 + fontsize), trans, fontsize=7, fontname=fontname, color=(0,0,0))
+
+                        # OCR image blocks (flowcharts/diagrams)
+                        try:
+                            import pytesseract
+                            from PIL import Image as PILImage
+                            from app.tasks.translation_tasks import translate_chunk
+                            for b in blocks:
+                                if b.get("type") != 1:
+                                    continue
+                                img_bbox = _fitz.Rect(b["bbox"])
+                                clip_pix = page.get_pixmap(matrix=_fitz.Matrix(2,2), clip=img_bbox)
+                                img = PILImage.frombytes("RGB", [clip_pix.width, clip_pix.height], clip_pix.samples)
+                                ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+                                n = len(ocr_data["text"])
+                                scale_x = img_bbox.width / clip_pix.width
+                                scale_y = img_bbox.height / clip_pix.height
+                                lines = {}
+                                for i in range(n):
+                                    word = ocr_data["text"][i].strip()
+                                    if not word or int(ocr_data["conf"][i]) < 40:
+                                        continue
+                                    key = (ocr_data["block_num"][i], ocr_data["par_num"][i], ocr_data["line_num"][i])
+                                    if key not in lines:
+                                        lines[key] = {"words":[], "x":ocr_data["left"][i], "y":ocr_data["top"][i], "w":0, "h":ocr_data["height"][i]}
+                                    lines[key]["words"].append(word)
+                                    lines[key]["w"] = max(lines[key]["w"], ocr_data["left"][i]+ocr_data["width"][i]-lines[key]["x"])
+                                if not lines:
+                                    continue
+                                page.insert_font(fontname="DejaVu", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+                                # Collect all redactions first
+                                line_data = []
+                                for key, line in lines.items():
+                                    text = " ".join(line["words"])
+                                    trans = translate_chunk(text, source_code, target_code)
+                                    x0 = img_bbox.x0 + line["x"]*scale_x
+                                    y0 = img_bbox.y0 + line["y"]*scale_y
+                                    x1 = img_bbox.x0 + (line["x"]+line["w"])*scale_x
+                                    y1 = img_bbox.y0 + (line["y"]+line["h"])*scale_y
+                                    fs = max((y1-y0)*0.85, 8)
+                                    page.add_redact_annot(_fitz.Rect(x0,y0,x1,y1), fill=(1,1,1))
+                                    line_data.append((x0, y0, fs, trans))
+                                # Apply all redactions at once
+                                page.apply_redactions()
+                                # Insert all translated text
+                                for x0, y0, fs, trans in line_data:
+                                    page.insert_text((x0, y0 + fs), trans, fontsize=fs, fontname="DejaVu", color=(0,0,0))
+                        except Exception:
+                            pass
 
                     buf = _io.BytesIO()
                     doc.save(buf, deflate=True, garbage=4)
