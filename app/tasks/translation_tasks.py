@@ -44,6 +44,23 @@ def translate_chunk(text: str, source_lang: str, target_lang: str) -> str:
     except Exception as e:
         logger.warning(f"Google Translate failed: {e}")
 
+    logger.warning(f"Google Translate failed, trying LibreTranslate fallback")
+
+    # LibreTranslate fallback
+    try:
+        libre_response = requests.post(
+            f"{settings.LIBRETRANSLATE_URL}/translate",
+            json={"q": text[:5000], "source": source_lang, "target": target_lang, "format": "text"},
+            timeout=30,
+        )
+        if libre_response.status_code == 200:
+            result = libre_response.json().get("translatedText", "")
+            if result:
+                logger.info(f"Translated using LibreTranslate {source_lang} -> {target_lang}")
+                return result
+    except Exception as e:
+        logger.warning(f"LibreTranslate failed: {e}")
+
     logger.error("Translation failed - no API available")
     return text
 
