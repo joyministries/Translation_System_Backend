@@ -14,7 +14,6 @@ router = APIRouter(prefix="/answer-keys", tags=["Answer Keys Management"])
 async def import_answer_key(
     file: UploadFile = File(...),
     title: str = "",
-    institution_id: str | None = None,
     book_id: str | None = None,
     exam_id: str | None = None,
     db: Session = Depends(get_db),
@@ -40,7 +39,6 @@ async def import_answer_key(
         title=title or file.filename,
         file_path=filename,
         raw_data=raw_data,
-        institution_id=institution_id,
         book_id=book_id,
         exam_id=exam_id,
         uploaded_by=None,

@@ -14,7 +14,6 @@ router = APIRouter(prefix="/exams", tags=["Exams Management"])
 async def import_exam(
     file: UploadFile = File(...),
     title: str = "",
-    institution_id: str | None = None,
     book_id: str | None = None,
     answer_key_id: str | None = None,
     db: Session = Depends(get_db),
@@ -40,7 +39,6 @@ async def import_exam(
         title=title or file.filename,
         file_path=filename,
         raw_data=raw_data,
-        institution_id=institution_id,
         book_id=book_id,
         uploaded_by=None,
     )
@@ -71,12 +69,9 @@ def list_exams(
     content_type: str | None = Query(
         None, description="Filter by content_type: book, exam, or answer_key"
     ),
-    institution_id: str | None = None,
     db: Session = Depends(get_db),
 ):
     query = db.query(Exam)
-    if institution_id:
-        query = query.filter(Exam.institution_id == institution_id)
 
     total = query.count()
     exams = query.offset(skip).limit(limit).all()

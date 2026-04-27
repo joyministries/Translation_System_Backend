@@ -11,6 +11,66 @@ from app.services.translation_service import TranslationService
 router = APIRouter(prefix="/translate", tags=["Translations"])
 
 
+@router.get("/book/{book_id}")
+def list_book_translations(
+    book_id: str,
+    current_user: User = Depends(require_role("admin", "student")),
+    db: Session = Depends(get_db),
+):
+    """List all existing translations for a book with their languages."""
+    from app.models import Translation, Language
+    translations = (
+        db.query(Translation, Language)
+        .join(Language, Language.id == Translation.language_id)
+        .filter(Translation.content_id == book_id, Translation.content_type == "book", Translation.status == "done")
+        .all()
+    )
+    return {
+        "book_id": book_id,
+        "translations": [
+            {
+                "translation_id": str(t.id),
+                "language_id": t.language_id,
+                "language_name": l.name,
+                "language_code": l.code,
+                "status": t.status,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            }
+            for t, l in translations
+        ]
+    }
+
+
+@router.get("/exam/{exam_id}")
+def list_exam_translations(
+    exam_id: str,
+    current_user: User = Depends(require_role("admin", "student")),
+    db: Session = Depends(get_db),
+):
+    """List all existing translations for an exam."""
+    from app.models import Translation, Language
+    translations = (
+        db.query(Translation, Language)
+        .join(Language, Language.id == Translation.language_id)
+        .filter(Translation.content_id == exam_id, Translation.content_type == "exam", Translation.status == "done")
+        .all()
+    )
+    return {
+        "exam_id": exam_id,
+        "translations": [
+            {
+                "translation_id": str(t.id),
+                "language_id": t.language_id,
+                "language_name": l.name,
+                "language_code": l.code,
+                "status": t.status,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            }
+            for t, l in translations
+        ]
+    }
+
+
 @router.post("")
 async def trigger_translation(
     content_type: str,
@@ -248,7 +308,10 @@ def download_translation(
                                 if result >= 0:
                                     break
                             else:
-                                page.insert_text((rect.x0, rect.y0 + fontsize), trans, fontsize=7, fontname=fontname, color=(0,0,0))
+                                # Expand rect to fit all text
+                                lines_count = max(len(trans.split('\n')), len(trans.split('•')))
+                                expanded = _fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + lines_count * 9 + 10)
+                                page.insert_textbox(expanded, trans, fontsize=7, fontname=fontname, color=(0,0,0))
 
                         # OCR image blocks (flowcharts/diagrams)
                         try:

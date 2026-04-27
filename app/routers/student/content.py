@@ -57,7 +57,6 @@ def list_books(
                 "id": str(b.id),
                 "title": b.title,
                 "subject": b.subject,
-                "grade_level": b.grade_level,
                 "page_count": b.page_count,
             }
             for b in books
@@ -92,7 +91,6 @@ def get_book(
         "grade_level": book.grade_level,
         "page_count": book.page_count,
         "extraction_status": book.extraction_status,
-        "institution": {"name": institution.name} if institution else None,
     }
 
 

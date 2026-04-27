@@ -87,7 +87,6 @@ def list_users(
                 "email": u.email,
                 "role": u.role,
                 "is_active": u.is_active,
-                "institution_id": str(u.institution_id) if u.institution_id else None,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
             }
             for u in users

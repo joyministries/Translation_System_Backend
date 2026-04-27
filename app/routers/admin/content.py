@@ -43,14 +43,9 @@ def list_all_content(
                     "id": str(b.id),
                     "title": b.title,
                     "subject": b.subject,
-                    "grade_level": b.grade_level,
                     "page_count": b.page_count,
                     "content_type": "book",
                     "extraction_status": b.extraction_status,
-                    "institution_name": b.institution.name if b.institution else None,
-                    "institution_id": str(b.institution_id)
-                    if b.institution_id
-                    else None,
                     "created_at": b.created_at.isoformat() if b.created_at else None,
                 }
             )
@@ -72,10 +67,6 @@ def list_all_content(
                     "sheet_names": e.raw_data.get("sheet_names", [])
                     if e.raw_data
                     else [],
-                    "institution_name": e.institution.name if e.institution else None,
-                    "institution_id": str(e.institution_id)
-                    if e.institution_id
-                    else None,
                     "created_at": e.created_at.isoformat() if e.created_at else None,
                 }
             )
@@ -94,10 +85,6 @@ def list_all_content(
                     "id": str(ak.id),
                     "title": ak.title,
                     "content_type": "answer_key",
-                    "institution_name": ak.institution.name if ak.institution else None,
-                    "institution_id": str(ak.institution_id)
-                    if ak.institution_id
-                    else None,
                     "created_at": ak.created_at.isoformat() if ak.created_at else None,
                 }
             )
@@ -170,7 +157,6 @@ def list_books(
                 "id": str(b.id),
                 "title": b.title,
                 "subject": b.subject,
-                "grade_level": b.grade_level,
                 "page_count": b.page_count,
                 "content_type": "book",
             }

@@ -16,8 +16,6 @@ async def upload_book(
     file: UploadFile = File(...),
     title: str = "",
     subject: str | None = None,
-    grade_level: str | None = None,
-    institution_id: str | None = None,
     first_content_page: int = 5,
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
@@ -45,10 +43,8 @@ async def upload_book(
     book = Book(
         title=title or file.filename,
         subject=subject,
-        grade_level=grade_level,
         file_path=filename,
         file_size_bytes=len(file_bytes),
-        institution_id=institution_id,
         uploaded_by=None,
         extraction_status="pending",
         first_content_page=first_content_page,
@@ -88,12 +84,9 @@ def list_books(
     content_type: str | None = Query(
         None, description="Filter by content_type: book, exam, or answer_key"
     ),
-    institution_id: str | None = None,
     db: Session = Depends(get_db),
 ):
     query = db.query(Book)
-    if institution_id:
-        query = query.filter(Book.institution_id == institution_id)
 
     total = query.count()
     books = query.offset(skip).limit(limit).all()
@@ -105,7 +98,6 @@ def list_books(
                 "id": str(b.id),
                 "title": b.title,
                 "subject": b.subject,
-                "grade_level": b.grade_level,
                 "page_count": b.page_count,
                 "content_type": "book",
                 "extraction_status": b.extraction_status,
