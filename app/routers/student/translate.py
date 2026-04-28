@@ -34,7 +34,7 @@ def list_book_translations(
                 "language_name": l.name,
                 "language_code": l.code,
                 "status": t.status,
-                "download_url": f"/translate/{t.id}/download",
+                "download_url": f"/translations/{t.id}/download",
                 "created_at": t.created_at.isoformat() if t.created_at else None,
             }
             for t, l in translations
@@ -65,7 +65,7 @@ def list_exam_translations(
                 "language_name": l.name,
                 "language_code": l.code,
                 "status": t.status,
-                "download_url": f"/translate/{t.id}/download",
+                "download_url": f"/translations/{t.id}/download",
                 "created_at": t.created_at.isoformat() if t.created_at else None,
             }
             for t, l in translations

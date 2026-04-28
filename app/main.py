@@ -6,6 +6,7 @@ from app.config import settings
 from app.database import engine, Base
 
 from app.routers import admin, student, auth
+from fastapi import APIRouter
 
 Base.metadata.create_all(bind=engine)
 
@@ -35,6 +36,30 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(student.router)
+
+# Shared translations router (no student/admin prefix)
+from app.routers.student.translate import list_book_translations, list_exam_translations
+from app.database import get_db
+from app.models.user import User
+from app.utils.security import require_role
+from fastapi import Depends
+
+shared_router = APIRouter(prefix="/translations", tags=["Translations"])
+
+@shared_router.get("/book/{book_id}")
+def shared_list_book_translations(book_id: str, current_user: User = Depends(require_role("admin","student","teacher","translator")), db=Depends(get_db)):
+    return list_book_translations(book_id, current_user, db)
+
+@shared_router.get("/exam/{exam_id}")
+def shared_list_exam_translations(exam_id: str, current_user: User = Depends(require_role("admin","student","teacher","translator")), db=Depends(get_db)):
+    return list_exam_translations(exam_id, current_user, db)
+
+@shared_router.get("/{translation_id}/download")
+def shared_download(translation_id: str, format: str = "pdf", current_user: User = Depends(require_role("admin","student","teacher","translator")), db=Depends(get_db)):
+    from app.routers.student.translate import download_translation
+    return download_translation(translation_id, format, current_user, db)
+
+app.include_router(shared_router)
 
 
 def custom_openapi():
