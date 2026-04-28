@@ -21,3 +21,4 @@ pydantic-settings
 deep-translator
 python-docx
 pytesseract
+pdfplumber
