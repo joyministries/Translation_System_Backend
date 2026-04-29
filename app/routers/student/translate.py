@@ -258,16 +258,30 @@ def download_translation(
                     target_code = lang.libretranslate_code or lang.code if lang else "sw"
                     source_code = src_lang.libretranslate_code or src_lang.code if src_lang else "en"
 
-                    with open(f"/app/storage/{book.file_path}", "rb") as _f:
-                        doc = _fitz.open("pdf", _f.read())
-
                     from app.tasks.translation_tasks import _batch_translate
+                    import re as _re
+
+                    def _should_skip(text):
+                        """Don't translate trademarks, emails, URLs, copyright notices."""
+                        t = text.strip()
+                        if _re.search(r'[\w.+-]+@[\w-]+\.\w+', t): return True  # email
+                        if _re.search(r'https?://|www\.', t): return True  # URL
+                        if t.startswith('©') or '©' in t: return True  # copyright
+                        if _re.match(r'^[A-Z][a-z]+ \d+:\d+', t): return True  # scripture ref only
+                        return False
 
                     with open(f"/app/storage/{book.file_path}", "rb") as _f:
                         doc = _fitz.open("pdf", _f.read())
+
+                    last_page = len(doc) - 1
 
                     for page_num, page in enumerate(doc):
                         if page_num == 0:
+                            continue
+
+                        # Last page: keep as original image (like cover)
+                        if page_num == last_page:
+                            continue
                             continue
 
                         blocks = page.get_text("dict")["blocks"]
@@ -286,9 +300,15 @@ def download_translation(
                         if not text_blocks:
                             continue
 
-                        # Translate PDF blocks directly — guaranteed correct alignment
+                        # Translate PDF blocks directly — skip trademarks/emails
                         texts = [t for _,t,_,_ in text_blocks]
-                        translated = _batch_translate(texts, source_code, target_code)
+                        to_translate = [(i, t) for i, t in enumerate(texts) if not _should_skip(t)]
+                        translated = list(texts)  # start with originals
+                        if to_translate:
+                            idxs, txts = zip(*to_translate)
+                            results = _batch_translate(list(txts), source_code, target_code)
+                            for idx, res in zip(idxs, results):
+                                translated[idx] = res
 
                         for (bbox, _, fontsize, is_bold), trans in zip(text_blocks, translated):
                             page.add_redact_annot(_fitz.Rect(bbox), fill=(1,1,1))

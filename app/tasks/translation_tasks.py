@@ -115,10 +115,14 @@ def _translate_excel_json(original_text: str, source_lang: str, target_lang: str
     sheets = data.get("sheets") or {}
     sheet_names = data.get("sheet_names") or list(sheets.keys())
 
-    # Collect all unique non-empty strings across all sheets + sheet names
-    all_texts = list(sheet_names)
-    for sheet_name in sheet_names:
-        for row in sheets.get(sheet_name, []):
+    # Collect all unique non-empty strings across all sheets (NOT sheet names)
+    all_texts = []
+    for sheet_idx, sheet_name in enumerate(sheet_names):
+        rows = sheets.get(sheet_name, [])
+        for row_idx, row in enumerate(rows):
+            # Skip first 3 rows of sheet 2 (index 1)
+            if sheet_idx == 1 and row_idx < 3:
+                continue
             for cell in row:
                 if cell and str(cell).strip():
                     all_texts.append(str(cell))
@@ -135,17 +139,23 @@ def _translate_excel_json(original_text: str, source_lang: str, target_lang: str
     translated_sheet_names = [translated_map.get(n, n) for n in sheet_names]
 
     translated_sheets = {}
-    for sheet_name, trans_name in zip(sheet_names, translated_sheet_names):
+    for sheet_idx, (sheet_name, trans_name) in enumerate(zip(sheet_names, translated_sheet_names)):
         rows = sheets.get(sheet_name, [])
-        translated_rows = [
-            [translated_map.get(str(cell), cell) if cell and str(cell).strip() else cell for cell in row]
-            for row in rows
-        ]
-        translated_sheets[trans_name] = translated_rows
+        translated_rows = []
+        for row_idx, row in enumerate(rows):
+            # Keep first 3 rows of sheet 2 (index 1) untranslated
+            if sheet_idx == 1 and row_idx < 3:
+                translated_rows.append(row)
+            else:
+                translated_rows.append(
+                    [translated_map.get(str(cell), cell) if cell and str(cell).strip() else cell for cell in row]
+                )
+        # Keep original sheet name (don't translate)
+        translated_sheets[sheet_name] = translated_rows
 
     return json.dumps({
         "sheet_names": sheet_names,
-        "translated_sheet_names": translated_sheet_names,
+        "translated_sheet_names": sheet_names,  # keep original names
         "sheets": translated_sheets,
     })
 
