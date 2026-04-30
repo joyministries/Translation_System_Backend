@@ -310,21 +310,35 @@ def download_translation(
                             for idx, res in zip(idxs, results):
                                 translated[idx] = res
 
-                        for (bbox, orig_text, fontsize, is_bold), trans in zip(text_blocks, translated):
-                            # For bullet blocks, pre-calculate full height needed and redact that area
+                        # Pre-calculate bullet heights to detect overflow into subsequent blocks
+                        bullet_fs = 9.0
+                        line_h = bullet_fs * 1.4
+                        # Map block index -> (y0, expanded_bottom)
+                        bullet_zones = {}
+                        for i, (bbox, orig_text, fontsize, is_bold) in enumerate(text_blocks):
                             if "•" in orig_text:
-                                bullet_fs = 9.0
-                                line_h = bullet_fs * 1.4
-                                avail_w = page.rect.x1 - _fitz.Rect(bbox).x0 - _fitz.Rect(bbox).x0
-                                items = [i.strip() for i in trans.split("•") if i.strip()]
+                                r = _fitz.Rect(bbox)
+                                avail_w = max(page.rect.x1 - r.x0 - r.x0, 1)
+                                items = [it.strip() for it in translated[i].split("•") if it.strip()]
                                 total_h = sum(
                                     max(1, -(-int(_fitz.get_text_length(f"• {it}", fontname="helv", fontsize=bullet_fs)) // int(avail_w))) * line_h + bullet_fs
                                     for it in items
                                 )
-                                redact_rect = _fitz.Rect(_fitz.Rect(bbox).x0 - 2, _fitz.Rect(bbox).y0 - 2,
-                                                         _fitz.Rect(bbox).x1 + 2, _fitz.Rect(bbox).y0 + total_h + 4)
+                                bullet_zones[i] = (r.y0, r.y0 + total_h)
+
+                        for j, ((bbox, orig_text, fontsize, is_bold), trans) in enumerate(zip(text_blocks, translated)):
+                            rect = _fitz.Rect(bbox)
+                            if "•" in orig_text:
+                                _, new_bottom = bullet_zones[j]
+                                redact_rect = _fitz.Rect(rect.x0 - 2, rect.y0 - 2, rect.x1 + 2, new_bottom + 4)
                             else:
-                                redact_rect = _fitz.Rect(bbox)
+                                # Redact blocks that fall inside any bullet's expanded zone
+                                redact_rect = _fitz.Rect(rect.x0 - 2, rect.y0 - 2, rect.x1 + 2, rect.y1 + 2)
+                                for bullet_idx, (bullet_y0, bullet_bottom) in bullet_zones.items():
+                                    if bullet_y0 < rect.y0 < bullet_bottom:
+                                        break
+                                else:
+                                    redact_rect = rect
                             page.add_redact_annot(redact_rect, fill=(1,1,1))
                         page.apply_redactions()
 
@@ -388,6 +402,14 @@ def download_translation(
                                     item_rect = _fitz.Rect(rect.x0, y, rect.x0 + avail_w, y + item_h)
                                     page.insert_textbox(item_rect, label, fontsize=bullet_fs, fontname=fontname, fontfile=fontfile, color=(0,0,0))
                                     y += item_h
+                                continue
+
+                            # Skip blocks that fall inside a bullet's expanded zone
+                            in_bullet_zone = any(
+                                by0 < rect.y0 < bb
+                                for by0, bb in bullet_zones.values()
+                            )
+                            if in_bullet_zone:
                                 continue
 
                             for scale in [fs, fs*0.85, fs*0.7, 7]:
