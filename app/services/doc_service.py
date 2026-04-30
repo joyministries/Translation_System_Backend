@@ -68,8 +68,8 @@ def translate_excel_from_json(original_file_path: str, translated_json: str) -> 
                 continue
             ws = wb[orig_name]
             for row_idx, row_data in enumerate(rows, start=1):
-                # Keep first 3 rows of sheets 2, 3, 4 (index 1,2,3) untranslated
-                if sheet_idx in (1, 2, 3) and row_idx <= 3:
+                # Keep first 3 rows of sheets 2, 3, 4, 5 (index 1,2,3,4) untranslated
+                if sheet_idx in (1, 2, 3, 4) and row_idx <= 3:
                     continue
                 for col_idx, value in enumerate(row_data, start=1):
                     if row_idx <= ws.max_row and col_idx <= ws.max_column:

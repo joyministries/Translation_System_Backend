@@ -310,8 +310,22 @@ def download_translation(
                             for idx, res in zip(idxs, results):
                                 translated[idx] = res
 
-                        for (bbox, _, fontsize, is_bold), trans in zip(text_blocks, translated):
-                            page.add_redact_annot(_fitz.Rect(bbox), fill=(1,1,1))
+                        for (bbox, orig_text, fontsize, is_bold), trans in zip(text_blocks, translated):
+                            # For bullet blocks, pre-calculate full height needed and redact that area
+                            if "•" in orig_text:
+                                bullet_fs = 9.0
+                                line_h = bullet_fs * 1.4
+                                avail_w = page.rect.x1 - _fitz.Rect(bbox).x0 - _fitz.Rect(bbox).x0
+                                items = [i.strip() for i in trans.split("•") if i.strip()]
+                                total_h = sum(
+                                    max(1, -(-int(_fitz.get_text_length(f"• {it}", fontname="helv", fontsize=bullet_fs)) // int(avail_w))) * line_h + bullet_fs
+                                    for it in items
+                                )
+                                redact_rect = _fitz.Rect(_fitz.Rect(bbox).x0 - 2, _fitz.Rect(bbox).y0 - 2,
+                                                         _fitz.Rect(bbox).x1 + 2, _fitz.Rect(bbox).y0 + total_h + 4)
+                            else:
+                                redact_rect = _fitz.Rect(bbox)
+                            page.add_redact_annot(redact_rect, fill=(1,1,1))
                         page.apply_redactions()
 
                         _font_regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -358,19 +372,22 @@ def download_translation(
                             # Bullet blocks: split on • and render each item wrapped within page width
                             if "•" in orig_text:
                                 items = [i.strip() for i in trans.split("•") if i.strip()]
-                                bullet_fs = 11.7
+                                bullet_fs = 9.0
                                 line_h = bullet_fs * 1.4
-                                right_x = page.rect.x1 - rect.x0  # right margin
+                                avail_w = page.rect.x1 - rect.x0 - rect.x0  # content width
                                 y = rect.y0
+                                page_bottom = page.rect.y1 - 20  # leave footer margin
                                 for item in items:
                                     label = f"• {item}"
-                                    item_rect = _fitz.Rect(rect.x0, y, right_x, y + line_h * 3)
-                                    page.insert_textbox(item_rect, label, fontsize=bullet_fs, fontname=fontname, fontfile=fontfile, color=(0,0,0))
-                                    # Estimate how many lines this item takes
                                     text_w = _fitz.get_text_length(label, fontname="helv", fontsize=bullet_fs)
-                                    avail_w = right_x - rect.x0
-                                    n_lines = max(1, int(text_w / avail_w) + 1)
-                                    y += line_h * n_lines
+                                    n_lines = max(1, -(-int(text_w) // int(avail_w)))  # ceiling division
+                                    item_h = line_h * n_lines + bullet_fs
+                                    # Don't overflow page
+                                    if y + item_h > page_bottom:
+                                        break
+                                    item_rect = _fitz.Rect(rect.x0, y, rect.x0 + avail_w, y + item_h)
+                                    page.insert_textbox(item_rect, label, fontsize=bullet_fs, fontname=fontname, fontfile=fontfile, color=(0,0,0))
+                                    y += item_h
                                 continue
 
                             for scale in [fs, fs*0.85, fs*0.7, 7]:
