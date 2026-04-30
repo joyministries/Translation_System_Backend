@@ -355,15 +355,22 @@ def download_translation(
                                     page.insert_text(_fitz.Point(right_x - num_w, y), pagenum, fontsize=toc_fs, fontname="helv", color=(0,0,0))
                                 continue
 
-                            # Bullet blocks: split on • and render each item on its own line
+                            # Bullet blocks: split on • and render each item wrapped within page width
                             if "•" in orig_text:
                                 items = [i.strip() for i in trans.split("•") if i.strip()]
                                 bullet_fs = 11.7
                                 line_h = bullet_fs * 1.4
-                                y = rect.y0 + bullet_fs
+                                right_x = page.rect.x1 - rect.x0  # right margin
+                                y = rect.y0
                                 for item in items:
-                                    page.insert_text(_fitz.Point(rect.x0, y), f"• {item}", fontsize=bullet_fs, fontname=fontname, fontfile=fontfile, color=(0,0,0))
-                                    y += line_h
+                                    label = f"• {item}"
+                                    item_rect = _fitz.Rect(rect.x0, y, right_x, y + line_h * 3)
+                                    page.insert_textbox(item_rect, label, fontsize=bullet_fs, fontname=fontname, fontfile=fontfile, color=(0,0,0))
+                                    # Estimate how many lines this item takes
+                                    text_w = _fitz.get_text_length(label, fontname="helv", fontsize=bullet_fs)
+                                    avail_w = right_x - rect.x0
+                                    n_lines = max(1, int(text_w / avail_w) + 1)
+                                    y += line_h * n_lines
                                 continue
 
                             for scale in [fs, fs*0.85, fs*0.7, 7]:
@@ -413,11 +420,13 @@ def download_translation(
                                     x1 = img_bbox.x0 + (line["x"]+line["w"])*scale_x
                                     y1 = img_bbox.y0 + (line["y"]+line["h"])*scale_y
                                     fs = max((y1-y0)*0.85, 8)
-                                    page.add_redact_annot(_fitz.Rect(x0,y0,x1,y1), fill=(1,1,1))
                                     line_data.append((x0, y0, fs, trans))
+                                # White out only the text line areas, keep the flowchart image
+                                for x0, y0, fs, trans in line_data:
+                                    page.add_redact_annot(_fitz.Rect(x0, y0, x0 + img_bbox.width, y0 + fs * 1.2), fill=(1,1,1))
                                 page.apply_redactions()
                                 for x0, y0, fs, trans in line_data:
-                                    page.insert_text((x0, y0+fs), trans, fontsize=fs, fontname="helv", color=(0,0,0))
+                                    page.insert_text((x0, y0+fs), trans, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
                         except Exception:
                             pass
 
@@ -425,21 +434,8 @@ def download_translation(
                     doc.save(buf, deflate=True, garbage=4)
                     raw_bytes = buf.getvalue()
 
-                    # Apply font/wrapping fix
-                    try:
-                        from app.services.pdf_format_fixer import fix_translated_pdf
-                        import tempfile, os as _os2
-                        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                            tmp.write(raw_bytes)
-                            tmp_path = tmp.name
-                        fixed_path = tmp_path + "_fixed.pdf"
-                        fix_translated_pdf(tmp_path, fixed_path)
-                        with open(fixed_path, "rb") as f:
-                            content = f.read()
-                        _os2.unlink(tmp_path)
-                        _os2.unlink(fixed_path)
-                    except Exception:
-                        content = raw_bytes
+                    # Skip format fixer — we already render at correct size with DejaVu
+                    content = raw_bytes
 
                     with open(cached_pdf_path, "wb") as f:
                         f.write(content)

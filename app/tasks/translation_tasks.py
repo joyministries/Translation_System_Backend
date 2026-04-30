@@ -143,8 +143,8 @@ def _translate_excel_json(original_text: str, source_lang: str, target_lang: str
         rows = sheets.get(sheet_name, [])
         translated_rows = []
         for row_idx, row in enumerate(rows):
-            # Keep first 3 rows of sheet 2 (index 1) untranslated
-            if sheet_idx == 1 and row_idx < 3:
+            # Keep first 3 rows of sheet 2 and sheet 3 (index 1 and 2) untranslated
+            if sheet_idx in (1, 2) and row_idx < 3:
                 translated_rows.append(row)
             else:
                 translated_rows.append(

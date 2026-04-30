@@ -61,13 +61,16 @@ def translate_excel_from_json(original_file_path: str, translated_json: str) -> 
             name_map = {n: n for n in wb.sheetnames}
 
         rows_updated = 0
-        for orig_name in wb.sheetnames:
+        for sheet_idx, orig_name in enumerate(wb.sheetnames):
             translated_key = name_map.get(orig_name, orig_name)
             rows = sheets_data.get(translated_key) or sheets_data.get(orig_name) or []
             if not rows:
                 continue
             ws = wb[orig_name]
             for row_idx, row_data in enumerate(rows, start=1):
+                # Keep first 3 rows of sheets 2, 3, 4 (index 1,2,3) untranslated
+                if sheet_idx in (1, 2, 3) and row_idx <= 3:
+                    continue
                 for col_idx, value in enumerate(row_data, start=1):
                     if row_idx <= ws.max_row and col_idx <= ws.max_column:
                         if value and str(value).strip():
