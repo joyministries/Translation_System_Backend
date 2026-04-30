@@ -314,17 +314,66 @@ def download_translation(
                             page.add_redact_annot(_fitz.Rect(bbox), fill=(1,1,1))
                         page.apply_redactions()
 
-                        for (bbox, _, fontsize, is_bold), trans in zip(text_blocks, translated):
+                        _font_regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+                        _font_bold    = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+                        for (bbox, orig_text, fontsize, is_bold), trans in zip(text_blocks, translated):
                             rect = _fitz.Rect(bbox)
-                            fontname = "hebo" if is_bold else "helv"
-                            for fs in [fontsize, fontsize*0.8, fontsize*0.6, 7]:
-                                result = page.insert_textbox(rect, trans, fontsize=fs, fontname=fontname, color=(0,0,0))
+                            fontfile = _font_bold if is_bold else _font_regular
+                            fontname = "dejvb" if is_bold else "dejv"
+                            fs = 11.7
+
+                            # TOC lines: title left, dot leaders, page number flush right
+                            if "....." in orig_text or "….." in orig_text:
+                                import re as _re
+                                toc_fs = 9.0
+                                left_x, right_x = 57.7, 537.35
+                                available_w = right_x - left_x
+
+                                # Extract page number from original text
+                                m = _re.search(r'(\d+)\s*$', orig_text.rstrip('.').strip())
+                                pagenum = m.group(1) if m else ""
+
+                                # Strip dots and page number from translated text to get clean title
+                                title = _re.sub(r'\.{2,}.*', '', trans).strip()
+                                title = _re.sub(r'\s*\d+\s*$', '', title).strip()
+
+                                # Measure title and page number widths
+                                title_w = _fitz.get_text_length(title, fontname="helv", fontsize=toc_fs)
+                                num_w = _fitz.get_text_length(pagenum, fontname="helv", fontsize=toc_fs) if pagenum else 0
+                                dot_w = _fitz.get_text_length(".", fontname="helv", fontsize=toc_fs)
+
+                                # Fill middle with dots
+                                gap = available_w - title_w - num_w
+                                dot_count = max(int(gap / dot_w) - 1, 3)
+                                dots = "." * dot_count
+
+                                y = rect.y1 - 1
+                                page.insert_text(_fitz.Point(left_x, y), title, fontsize=toc_fs, fontname=fontname, fontfile=fontfile, color=(0,0,0))
+                                page.insert_text(_fitz.Point(left_x + title_w, y), dots, fontsize=toc_fs, fontname="helv", color=(0,0,0))
+                                if pagenum:
+                                    page.insert_text(_fitz.Point(right_x - num_w, y), pagenum, fontsize=toc_fs, fontname="helv", color=(0,0,0))
+                                continue
+
+                            # Bullet blocks: split on • and render each item on its own line
+                            if "•" in orig_text:
+                                items = [i.strip() for i in trans.split("•") if i.strip()]
+                                bullet_fs = 11.7
+                                line_h = bullet_fs * 1.4
+                                y = rect.y0 + bullet_fs
+                                for item in items:
+                                    page.insert_text(_fitz.Point(rect.x0, y), f"• {item}", fontsize=bullet_fs, fontname=fontname, fontfile=fontfile, color=(0,0,0))
+                                    y += line_h
+                                continue
+
+                            for scale in [fs, fs*0.85, fs*0.7, 7]:
+                                result = page.insert_textbox(rect, trans, fontsize=scale, fontname=fontname, fontfile=fontfile, color=(0,0,0))
                                 if result >= 0:
                                     break
                             else:
                                 lines_count = max(len(trans.split('\n')), len(trans.split('•')))
                                 expanded = _fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + lines_count * 9 + 10)
-                                page.insert_textbox(expanded, trans, fontsize=7, fontname=fontname, color=(0,0,0))
+                                page.insert_textbox(expanded, trans, fontsize=7, fontname=fontname, fontfile=fontfile, color=(0,0,0))
 
                         # OCR flowchart images
                         try:
