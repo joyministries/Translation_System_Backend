@@ -204,6 +204,12 @@ def get_translation(
 def download_translation(
     translation_id: str,
     format: str = "pdf",
+    cache_variant: str | None = Query(
+        None,
+        pattern=r"^[A-Za-z0-9_-]{1,40}$",
+        description="Optional suffix for writing/reading a separate cached PDF variant.",
+    ),
+    refresh_cache: bool = False,
     current_user: User = Depends(require_role("admin", "student")),
     db: Session = Depends(get_db),
 ):
@@ -246,9 +252,12 @@ def download_translation(
         if book and book.file_path and book.file_path.endswith(".pdf"):
             try:
                 import os as _os, io as _io
-                cached_pdf_path = f"/app/storage/{book.file_path.replace('.pdf', f'_translated_{translation.language_id}.pdf')}"
+                cache_suffix = f"_translated_{translation.language_id}"
+                if cache_variant:
+                    cache_suffix = f"{cache_suffix}_{cache_variant}"
+                cached_pdf_path = f"/app/storage/{book.file_path.replace('.pdf', f'{cache_suffix}.pdf')}"
 
-                if _os.path.exists(cached_pdf_path):
+                if _os.path.exists(cached_pdf_path) and not refresh_cache:
                     with open(cached_pdf_path, "rb") as f:
                         content = f.read()
                 elif translation.translated_text:
@@ -284,46 +293,135 @@ def download_translation(
                     for page_num in range(min(6, last_page - 1)):
                         page = orig_doc[page_num]
                         if page_num == 0:
-                            continue  # keep cover as-is
+                            continue  # keep cover as-is only
+
+                        # Page 2 (index 1): translate span-by-span preserving exact position/size/color
+                        if page_num == 1:
+                            spans_to_translate = []
+                            for b in page.get_text("dict")["blocks"]:
+                                if b.get("type") != 0: continue
+                                for line in b["lines"]:
+                                    for span in line["spans"]:
+                                        t = span["text"].strip()
+                                        if not t or t.startswith("©"): continue
+                                        spans_to_translate.append(span)
+                            if spans_to_translate:
+                                texts = [s["text"].strip() for s in spans_to_translate]
+                                translated = _batch_translate(texts, source_code, target_code)
+                                for span, trans in zip(spans_to_translate, translated):
+                                    rect = _fitz.Rect(span["bbox"])
+                                    page.add_redact_annot(rect, fill=(1,1,1))
+                                page.apply_redactions()
+                                for span, trans in zip(spans_to_translate, translated):
+                                    # Convert color int to RGB tuple
+                                    c = span["color"]
+                                    color = ((c >> 16 & 255)/255, (c >> 8 & 255)/255, (c & 255)/255)
+                                    fs = span["size"]
+                                    fontname = "dejvb" if "Bold" in span.get("font","") else "dejv"
+                                    fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if "Bold" in span.get("font","") else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+                                    # Center the translated text at the same x position
+                                    tw = _fitz.get_text_length(trans, fontname="helv", fontsize=fs)
+                                    page_cx = page.rect.width / 2
+                                    x = page_cx - tw / 2
+                                    y = span["origin"][1]
+                                    page.insert_text(_fitz.Point(x, y), trans, fontsize=fs, fontname=fontname, fontfile=fontfile, color=color)
+                            continue
                         # Translate text blocks
                         text_blocks = []
                         for b in page.get_text("dict")["blocks"]:
                             if b.get("type") != 0: continue
-                            text = "".join(s["text"] for l in b["lines"] for s in l["spans"]).strip()
-                            if not text or text.startswith("©"): continue
-                            if len(text) <= 150 and ("@" in text or "www." in text): continue
-                            text_blocks.append((b["bbox"], text))
+                            # Split block into bold/non-bold groups for proper heading separation
+                            current_text = ""
+                            current_bold = None
+                            current_bbox = list(b["bbox"])
+                            for line in b.get("lines", []):
+                                for span in line.get("spans", []):
+                                    t = span["text"]
+                                    if not t.strip():
+                                        current_text += t
+                                        continue
+                                    is_bold = "Bold" in span.get("font", "")
+                                    if current_bold is None:
+                                        current_bold = is_bold
+                                    if is_bold != current_bold:
+                                        if current_text.strip():
+                                            ct = current_text.strip()
+                                            if not ct.startswith("©") and not (len(ct) <= 150 and ("@" in ct or "www." in ct)):
+                                                # Only mark as bold if it's a short heading, not long body text
+                                                text_blocks.append((tuple(current_bbox), ct, current_bold and len(ct) < 80))
+                                        current_text = t
+                                        current_bold = is_bold
+                                    else:
+                                        current_text += t
+                            if current_text.strip() and current_bold is not None:
+                                ct = current_text.strip()
+                                if not ct.startswith("©") and not (len(ct) <= 150 and ("@" in ct or "www." in ct)):
+                                    text_blocks.append((tuple(b["bbox"]), ct, current_bold and len(ct) < 80))
                         if text_blocks:
-                            translated = _batch_translate([t for _, t in text_blocks], source_code, target_code)
-                            for (bbox, _), trans in zip(text_blocks, translated):
-                                rect = _fitz.Rect(bbox)
-                                page.add_redact_annot(rect, fill=(1,1,1))
-                            page.apply_redactions()
-                            for (bbox, orig_text), trans in zip(text_blocks, translated):
-                                rect = _fitz.Rect(bbox)
-                                # TOC page (index 5): expand dotted lines to full page width
-                                if page_num == 5 and ("....." in orig_text or "….." in orig_text):
-                                    import re as _re2
-                                    m = _re2.search(r'(\d+)\s*$', trans.rstrip('.').strip())
-                                    pagenum = m.group(1) if m else ""
-                                    title = _re2.sub(r'\.{2,}.*', '', trans).strip()
-                                    title = _re2.sub(r'\s*\d+\s*$', '', title).strip()
-                                    left_x, right_x = rect.x0, page.rect.x1 - rect.x0
-                                    fs = 9.0
-                                    title_w = _fitz.get_text_length(title, fontname="helv", fontsize=fs)
-                                    num_w = _fitz.get_text_length(pagenum, fontname="helv", fontsize=fs) if pagenum else 0
-                                    dot_w = _fitz.get_text_length(".", fontname="helv", fontsize=fs)
-                                    gap = (right_x - left_x) - title_w - num_w
-                                    dots = "." * max(3, int(gap / dot_w))
-                                    y = rect.y1 - 1
-                                    page.insert_text(_fitz.Point(left_x, y), title, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
-                                    page.insert_text(_fitz.Point(left_x + title_w, y), dots, fontsize=fs, fontname="helv", color=(0,0,0))
-                                    if pagenum:
-                                        page.insert_text(_fitz.Point(right_x - num_w, y), pagenum, fontsize=fs, fontname="helv", color=(0,0,0))
-                                else:
+                            # For TOC page: use stored translation lines by position
+                            stored_lookup = {}
+                            if page_num == 5 and translation.translated_text:
+                                trans_toc_lines = [l.strip() for l in translation.translated_text.split("\n")
+                                                   if l.strip() and ("....." in l or "….." in l)]
+                                orig_toc_blocks = [(i, orig) for i, (_, orig, _b) in enumerate(text_blocks) if "....." in orig or "….." in orig]
+                                for pos, (blk_idx, orig) in enumerate(orig_toc_blocks):
+                                    if pos < len(trans_toc_lines):
+                                        stored_lookup[blk_idx] = trans_toc_lines[pos]
+
+                            translated = _batch_translate([t for _, t, _ in text_blocks], source_code, target_code)
+                            # Override TOC lines with stored translation
+                            translated = [stored_lookup.get(i, trans) for i, trans in enumerate(translated)]
+                            if page_num == 3:
+                                # Flowchart page: text embedded in image layer, use draw_rect to cover
+                                for (bbox, _, _b), trans in zip(text_blocks, translated):
+                                    rect = _fitz.Rect(bbox)
+                                    page.draw_rect(rect, color=(1,1,1), fill=(1,1,1))
                                     for fs in [10, 8, 7]:
                                         if page.insert_textbox(rect, trans, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0)) >= 0:
                                             break
+                            else:
+                                for (bbox, _, _b), trans in zip(text_blocks, translated):
+                                    page.add_redact_annot(_fitz.Rect(bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2), fill=(1,1,1))
+                                page.apply_redactions()
+                                # Track y position per bbox to stack sub-blocks vertically
+                                y_cursor = {}
+                                for (bbox, orig_text, is_bold), trans in zip(text_blocks, translated):
+                                    rect = _fitz.Rect(bbox)
+                                    # TOC page (index 5): expand dotted lines to full page width
+                                    if page_num == 5 and ("....." in orig_text or "….." in orig_text):
+                                        import re as _re2
+                                        m = _re2.search(r'(\d+)\s*$', trans.rstrip('.').strip())
+                                        pagenum = m.group(1) if m else ""
+                                        title = _re2.sub(r'\.{2,}.*', '', trans).strip()
+                                        title = _re2.sub(r'\s*\d+\s*$', '', title).strip()
+                                        left_x, right_x = rect.x0, page.rect.x1 - rect.x0
+                                        fs = 9.0
+                                        title_w = _fitz.get_text_length(title, fontname="helv", fontsize=fs)
+                                        num_w = _fitz.get_text_length(pagenum, fontname="helv", fontsize=fs) if pagenum else 0
+                                        dot_w = _fitz.get_text_length(".", fontname="helv", fontsize=fs)
+                                        gap = (right_x - left_x) - title_w - num_w
+                                        dots = "." * max(3, int(gap / dot_w))
+                                        y = rect.y1 - 1
+                                        page.insert_text(_fitz.Point(left_x, y), title, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
+                                        page.insert_text(_fitz.Point(left_x + title_w, y), dots, fontsize=fs, fontname="helv", color=(0,0,0))
+                                        if pagenum:
+                                            page.insert_text(_fitz.Point(right_x - num_w, y), pagenum, fontsize=fs, fontname="helv", color=(0,0,0))
+                                    else:
+                                        fontfile_use = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if is_bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+                                        fontname_use = "dejvb" if is_bold else "dejv"
+                                        fs_use = 13 if is_bold else 10
+                                        bbox_key = (round(bbox[0]), round(bbox[1]))
+                                        y_start = y_cursor.get(bbox_key, rect.y0)
+                                        render_rect = _fitz.Rect(rect.x0, y_start, rect.x1, page.rect.y1 - 20)
+                                        for fs in [fs_use, fs_use-2, 7]:
+                                            result = page.insert_textbox(render_rect, trans, fontsize=fs, fontname=fontname_use, fontfile=fontfile_use, color=(0,0,0))
+                                            if result >= 0:
+                                                # Estimate height used and advance cursor
+                                                tw = _fitz.get_text_length(trans, fontname="helv", fontsize=fs)
+                                                n_lines = max(1, -(-int(tw) // max(int(render_rect.width), 1)))
+                                                gap_after = fs * 1.5 if is_bold else fs * 0.3
+                                                y_cursor[bbox_key] = y_start + n_lines * fs * 1.3 + gap_after
+                                                break
                         # Translate flowchart image (page 4 = index 3)
                         if page_num == 3:
                             for b in page.get_text("dict")["blocks"]:
@@ -353,60 +451,185 @@ def download_translation(
                                         page.draw_rect(_fitz.Rect(x0, y0, img_bbox.x1, y0 + fs*1.3), color=(1,1,1), fill=(1,1,1))
                                         page.insert_text(_fitz.Point(x0, y0+fs), t, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
 
-                    # --- Build body from stored translation (skip TOC lines) ---
+                    # --- Build body from stored translation using original PDF line styles ---
                     heading_style = ParagraphStyle("H", fontName="DejaVu-Bold", fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=TA_LEFT)
                     subhead_style = ParagraphStyle("SH", fontName="DejaVu-Bold", fontSize=11, spaceBefore=8, spaceAfter=2, leading=14, alignment=TA_LEFT)
                     body_style = ParagraphStyle("B", fontName="DejaVu", fontSize=11, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_JUSTIFY)
+                    body_style_bold = ParagraphStyle("BB", fontName="DejaVu-Bold", fontSize=11, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_JUSTIFY)
+                    indent_style = ParagraphStyle("IND", fontName="DejaVu", fontSize=11,
+                        leftIndent=20, spaceBefore=2, spaceAfter=2, leading=15)
 
                     body_buf = _io.BytesIO()
                     body_doc_rl = SimpleDocTemplate(body_buf, pagesize=A4,
                         leftMargin=0.75*inch, rightMargin=0.75*inch,
                         topMargin=0.75*inch, bottomMargin=0.75*inch)
+
+                    def _line_is_bold(spans):
+                        total_chars = sum(len(s.get("text", "")) for s in spans)
+                        if not total_chars:
+                            return False
+                        bold_chars = sum(
+                            len(s.get("text", ""))
+                            for s in spans
+                            if "bold" in s.get("font", "").lower()
+                        )
+                        return bold_chars >= total_chars * 0.45
+
+                    def _source_line_records():
+                        records = []
+                        start_page = max((book.first_content_page or 5) - 1, 0)
+
+                        def _normalize_line(value):
+                            return _re.sub(r"\s+", " ", value or "").strip()
+
+                        for source_page_num in range(start_page, len(orig_doc)):
+                            page = orig_doc[source_page_num]
+                            page_dict = page.get_text("dict", sort=True)
+                            styled_lines = []
+                            for block in page_dict.get("blocks", []):
+                                if block.get("type") != 0:
+                                    continue
+                                for line in block.get("lines", []):
+                                    spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
+                                    if not spans:
+                                        continue
+                                    styled_text = "".join(s.get("text", "") for s in spans).strip()
+                                    if not styled_text:
+                                        continue
+                                    styled_lines.append({
+                                        "text": styled_text,
+                                        "normalized": _normalize_line(styled_text),
+                                        "bold": _line_is_bold(spans),
+                                        "size": max(float(s.get("size", 11)) for s in spans),
+                                    })
+
+                            style_cursor = 0
+                            for extracted_line in page.get_text("text", sort=True).splitlines():
+                                original_text = extracted_line.strip()
+                                if not original_text:
+                                    continue
+                                normalized = _normalize_line(original_text)
+                                matched_style = None
+                                for idx in range(style_cursor, len(styled_lines)):
+                                    styled = styled_lines[idx]
+                                    if (
+                                        normalized == styled["normalized"]
+                                        or normalized in styled["normalized"]
+                                        or styled["normalized"] in normalized
+                                    ):
+                                        matched_style = styled
+                                        style_cursor = idx + 1
+                                        break
+                                if not matched_style:
+                                    matched_style = {"bold": False, "size": 11}
+                                records.append({
+                                    "page_number": source_page_num + 1,
+                                    "text": original_text,
+                                    "bold": matched_style["bold"],
+                                    "size": matched_style["size"],
+                                })
+                        return records
+
+                    def _skip_body_record(record):
+                        original = record["text"].strip()
+                        if original.startswith("CC101 Christian Foundations"):
+                            return True
+                        if _re.fullmatch(r"\d+", original):
+                            return True
+                        return False
+
+                    # Pre-process: join continuation lines (scripture refs split across lines)
+                    raw_lines = translation.translated_text.split("\n")
+                    source_records = _source_line_records()
+                    source_iter = iter(source_records)
+                    translated_records = []
+                    for line in raw_lines:
+                        p = line.strip()
+                        source_record = next(source_iter, None) if p else None
+                        if p and not source_record:
+                            source_record = {
+                                "page_number": 0,
+                                "text": "",
+                                "bold": False,
+                                "size": 11,
+                            }
+                        # Continuation: starts with verse ref like "44:8" or "10:14" or "13:20"
+                        if translated_records and p and _re.match(r'^\d+:\d+', p):
+                            translated_records[-1]["text"] = translated_records[-1]["text"].rstrip() + " " + p
+                        else:
+                            translated_records.append({
+                                "text": line,
+                                "source": source_record,
+                            })
+
                     story = []
-                    skip_toc = False
-                    reached_chapter_1 = False
-                    for para in translation.translated_text.split("\n"):
-                        p = para.strip()
-                        # Detect and skip the entire TOC section
-                        if not reached_chapter_1 and ("TABLE OF CONTENTS" in p.upper() or "YALIYOMO" in p.upper() or "ZVIRI MUKATI" in p.upper() or "TABLE DES" in p.upper() or "ÍNDICE" in p.upper() or "JEDWALI" in p.upper()):
-                            skip_toc = True
+                    for record in translated_records:
+                        p = record["text"].strip()
+                        source_record = record["source"]
+                        if source_record and not (7 <= source_record["page_number"] <= 99):
                             continue
-                        if skip_toc:
-                            # End of TOC: first chapter heading WITHOUT dot leaders
-                            if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO|NHANGANYAYA|INTRODUCTION|UTANGULIZI)\b', p, _re.IGNORECASE) and "....." not in p:
-                                skip_toc = False
-                                # Don't include intro pages — only start from Chapter 1
-                                if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO)\s+\d+', p, _re.IGNORECASE):
-                                    reached_chapter_1 = True
+                        if source_record and _skip_body_record(source_record):
                             continue
-                        # Skip everything before Chapter 1
-                        if not reached_chapter_1:
-                            if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO)\s+\d+', p, _re.IGNORECASE) and "....." not in p:
-                                reached_chapter_1 = True
-                            else:
-                                continue
                         if not p:
                             story.append(Spacer(1, 0.05*inch))
                             continue
                         safe = p.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-                        if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO)\s+\d+', p, _re.IGNORECASE):
+                        is_source_bold = bool(source_record and source_record["bold"])
+                        source_size = float(source_record["size"] if source_record else 11)
+                        if is_source_bold and source_size >= 14:
+                            story.append(Spacer(1, 0.15*inch))
                             story.append(Paragraph(safe, heading_style))
-                        elif len(p) < 80 and (p.isupper() or p.rstrip().endswith(":")):
+                            story.append(Spacer(1, 0.08*inch))
+                        elif is_source_bold:
                             story.append(Paragraph(safe, subhead_style))
+                        elif _re.match(r'^\([ivxabc]+\)', p):
+                            story.append(Paragraph(safe, indent_style))
                         else:
                             story.append(Paragraph(safe, body_style))
-                    body_doc_rl.build(story)
-                    body_bytes = body_buf.getvalue()
+                    try:
+                        body_doc_rl.build(story)
+                        body_bytes = body_buf.getvalue()
+                        # Repair PDF via fitz to avoid malformed page tree on merge
+                        _repair = _fitz.open("pdf", body_bytes)
+                        _rbuf = _io.BytesIO()
+                        _repair.save(_rbuf, garbage=4, deflate=True)
+                        body_bytes = _rbuf.getvalue()
+                    except Exception as _e:
+                        import logging as _log
+                        _log.getLogger(__name__).warning(f"ReportLab build failed: {_e}")
+                        body_bytes = b""
 
-                    # --- Assemble: first 4 pages (translated in-place) + body + last 2 pages ---
+                    # --- Translate page 100 (index 99) in-place using overlay ---
+                    if last_page >= 99:
+                        p100 = orig_doc[last_page - 1]
+                        p100_blocks = []
+                        for b in p100.get_text("dict")["blocks"]:
+                            if b.get("type") != 0: continue
+                            text = "".join(s["text"] for l in b["lines"] for s in l["spans"]).strip()
+                            if not text or text.startswith("©"): continue
+                            if len(text) <= 150 and ("@" in text or "www." in text): continue
+                            p100_blocks.append((b["bbox"], text))
+                        if p100_blocks:
+                            translated_p100 = _batch_translate([t for _, t in p100_blocks], source_code, target_code)
+                            for (bbox, _), trans in zip(p100_blocks, translated_p100):
+                                p100.add_redact_annot(_fitz.Rect(bbox), fill=(1,1,1))
+                            p100.apply_redactions()
+                            for (bbox, _), trans in zip(p100_blocks, translated_p100):
+                                rect = _fitz.Rect(bbox)
+                                for fs in [10, 8, 7]:
+                                    if p100.insert_textbox(rect, trans, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0)) >= 0:
+                                        break
+
+                    # --- Assemble: first 6 pages (translated in-place) + body + last 2 pages ---
                     mod_buf = _io.BytesIO()
                     orig_doc.save(mod_buf)
                     mod_doc = _fitz.open("pdf", mod_buf.getvalue())
 
                     out = _fitz.open()
                     out.insert_pdf(mod_doc, from_page=0, to_page=min(5, last_page))
-                    body_fitz = _fitz.open("pdf", body_bytes)
-                    out.insert_pdf(body_fitz)
+                    if body_bytes:
+                        body_fitz = _fitz.open("pdf", body_bytes)
+                        out.insert_pdf(body_fitz)
                     if last_page >= 6:
                         out.insert_pdf(orig_doc, from_page=max(last_page-1, 6), to_page=last_page)
 
