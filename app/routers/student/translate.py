@@ -346,7 +346,9 @@ def download_translation(
                                     if is_bold != current_bold:
                                         if current_text.strip():
                                             ct = current_text.strip()
-                                            if not ct.startswith("©") and not (len(ct) <= 150 and ("@" in ct or "www." in ct)):
+                                            import re as _re_skip
+                                            _is_only_url = bool(_re_skip.match(r'^(https?://\S+|www\.\S+|[\w.+-]+@[\w-]+\.\w+)\s*$', ct))
+                                            if not ct.startswith("©") and not _is_only_url:
                                                 # Only mark as bold if it's a short heading, not long body text
                                                 text_blocks.append((tuple(current_bbox), ct, current_bold and len(ct) < 80))
                                         current_text = t
@@ -355,7 +357,9 @@ def download_translation(
                                         current_text += t
                             if current_text.strip() and current_bold is not None:
                                 ct = current_text.strip()
-                                if not ct.startswith("©") and not (len(ct) <= 150 and ("@" in ct or "www." in ct)):
+                                import re as _re_skip2
+                                _is_only_url2 = bool(_re_skip2.match(r'^(https?://\S+|www\.\S+|[\w.+-]+@[\w-]+\.\w+)\s*$', ct))
+                                if not ct.startswith("©") and not _is_only_url2:
                                     text_blocks.append((tuple(b["bbox"]), ct, current_bold and len(ct) < 80))
                         if text_blocks:
                             # For TOC page: use stored translation lines by position
@@ -372,12 +376,16 @@ def download_translation(
                             # Override TOC lines with stored translation
                             translated = [stored_lookup.get(i, trans) for i, trans in enumerate(translated)]
                             if page_num == 3:
-                                # Flowchart page: text embedded in image layer, use draw_rect to cover
+                                # Flowchart/examination page: redact original text then insert translation
+                                for (bbox, _, _b), trans in zip(text_blocks, translated):
+                                    page.add_redact_annot(_fitz.Rect(bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2), fill=(1,1,1))
+                                page.apply_redactions()
                                 for (bbox, _, _b), trans in zip(text_blocks, translated):
                                     rect = _fitz.Rect(bbox)
-                                    page.draw_rect(rect, color=(1,1,1), fill=(1,1,1))
-                                    for fs in [10, 8, 7]:
-                                        if page.insert_textbox(rect, trans, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0)) >= 0:
+                                    # Use expanded rect so translated text can wrap/flow
+                                    expanded = _fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + max(rect.height * 3, 100))
+                                    for fs in [10, 9, 8, 7]:
+                                        if page.insert_textbox(expanded, trans, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0)) >= 0:
                                             break
                             else:
                                 for (bbox, _, _b), trans in zip(text_blocks, translated):
@@ -446,9 +454,11 @@ def download_translation(
                                     texts = [" ".join(ocr_lines[k]["words"]) for k in line_keys]
                                     translated_lines = _batch_translate(texts, source_code, target_code)
                                     line_data = [(img_bbox.x0 + ocr_lines[k]["x"]*scale_x, img_bbox.y0 + ocr_lines[k]["y"]*scale_y, max(ocr_lines[k]["h"]*scale_y*0.85, 8), t) for k, t in zip(line_keys, translated_lines)]
-                                    # Draw white box behind each line then insert translated text on top
+                                    # Redact each text line area in the image, then insert translation
+                                    for x0, y0, fs, _ in line_data:
+                                        page.add_redact_annot(_fitz.Rect(x0, y0, img_bbox.x1, y0 + fs*1.3), fill=(1,1,1))
+                                    page.apply_redactions()
                                     for x0, y0, fs, t in line_data:
-                                        page.draw_rect(_fitz.Rect(x0, y0, img_bbox.x1, y0 + fs*1.3), color=(1,1,1), fill=(1,1,1))
                                         page.insert_text(_fitz.Point(x0, y0+fs), t, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
 
                     # --- Build body from stored translation using original PDF line styles ---
