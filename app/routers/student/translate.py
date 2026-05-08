@@ -376,17 +376,59 @@ def download_translation(
                             # Override TOC lines with stored translation
                             translated = [stored_lookup.get(i, trans) for i, trans in enumerate(translated)]
                             if page_num == 3:
-                                # Flowchart/examination page: redact original text then insert translation
+                                # Page 4: collect ALL redactions (text + OCR image) then apply once
+                                all_inserts = []  # (type, args)
+
+                                # Text blocks
                                 for (bbox, _, _b), trans in zip(text_blocks, translated):
                                     page.add_redact_annot(_fitz.Rect(bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2), fill=(1,1,1))
-                                page.apply_redactions()
-                                for (bbox, _, _b), trans in zip(text_blocks, translated):
                                     rect = _fitz.Rect(bbox)
-                                    # Use expanded rect so translated text can wrap/flow
-                                    expanded = _fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + max(rect.height * 3, 100))
-                                    for fs in [10, 9, 8, 7]:
-                                        if page.insert_textbox(expanded, trans, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0)) >= 0:
-                                            break
+                                    all_inserts.append(("text", rect, trans))
+
+                                # OCR image blocks
+                                for b in page.get_text("dict")["blocks"]:
+                                    if b.get("type") != 1: continue
+                                    img_bbox = _fitz.Rect(b["bbox"])
+                                    pix = page.get_pixmap(matrix=_fitz.Matrix(2,2), clip=img_bbox)
+                                    img = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                                    ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+                                    n = len(ocr_data["text"])
+                                    scale_x = img_bbox.width / pix.width
+                                    scale_y = img_bbox.height / pix.height
+                                    ocr_lines = {}
+                                    for i in range(n):
+                                        word = ocr_data["text"][i].strip()
+                                        if not word or int(ocr_data["conf"][i]) < 50: continue
+                                        key = (ocr_data["block_num"][i], ocr_data["par_num"][i], ocr_data["line_num"][i])
+                                        if key not in ocr_lines:
+                                            ocr_lines[key] = {"words": [], "x": ocr_data["left"][i], "y": ocr_data["top"][i], "h": ocr_data["height"][i]}
+                                        ocr_lines[key]["words"].append(word)
+                                    if ocr_lines:
+                                        line_keys = list(ocr_lines.keys())
+                                        ocr_texts = [" ".join(ocr_lines[k]["words"]) for k in line_keys]
+                                        ocr_translated = _batch_translate(ocr_texts, source_code, target_code)
+                                        for k, t in zip(line_keys, ocr_translated):
+                                            x0 = img_bbox.x0 + ocr_lines[k]["x"]*scale_x
+                                            y0 = img_bbox.y0 + ocr_lines[k]["y"]*scale_y
+                                            fs = max(ocr_lines[k]["h"]*scale_y*0.85, 8)
+                                            page.add_redact_annot(_fitz.Rect(x0, y0, img_bbox.x1, y0 + fs*1.3), fill=(1,1,1))
+                                            all_inserts.append(("ocr", x0, y0, fs, t))
+
+                                # Single apply_redactions call
+                                page.apply_redactions()
+
+                                # Now insert all translated text
+                                for item in all_inserts:
+                                    if item[0] == "text":
+                                        _, rect, trans = item
+                                        # Use full page width rect for long text to prevent overlap
+                                        expanded = _fitz.Rect(rect.x0, rect.y0, page.rect.x1 - rect.x0, page.rect.y1 - 20)
+                                        for fs in [10, 9, 8, 7]:
+                                            if page.insert_textbox(expanded, trans, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0)) >= 0:
+                                                break
+                                    else:
+                                        _, x0, y0, fs, t = item
+                                        page.insert_text(_fitz.Point(x0, y0+fs), t, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
                             else:
                                 for (bbox, _, _b), trans in zip(text_blocks, translated):
                                     page.add_redact_annot(_fitz.Rect(bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2), fill=(1,1,1))
@@ -430,37 +472,6 @@ def download_translation(
                                                 gap_after = fs * 1.5 if is_bold else fs * 0.3
                                                 y_cursor[bbox_key] = y_start + n_lines * fs * 1.3 + gap_after
                                                 break
-                        # Translate flowchart image (page 4 = index 3)
-                        if page_num == 3:
-                            for b in page.get_text("dict")["blocks"]:
-                                if b.get("type") != 1: continue
-                                img_bbox = _fitz.Rect(b["bbox"])
-                                pix = page.get_pixmap(matrix=_fitz.Matrix(2,2), clip=img_bbox)
-                                img = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                                ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-                                n = len(ocr_data["text"])
-                                scale_x = img_bbox.width / pix.width
-                                scale_y = img_bbox.height / pix.height
-                                ocr_lines = {}
-                                for i in range(n):
-                                    word = ocr_data["text"][i].strip()
-                                    if not word or int(ocr_data["conf"][i]) < 50: continue
-                                    key = (ocr_data["block_num"][i], ocr_data["par_num"][i], ocr_data["line_num"][i])
-                                    if key not in ocr_lines:
-                                        ocr_lines[key] = {"words": [], "x": ocr_data["left"][i], "y": ocr_data["top"][i], "h": ocr_data["height"][i]}
-                                    ocr_lines[key]["words"].append(word)
-                                if ocr_lines:
-                                    line_keys = list(ocr_lines.keys())
-                                    texts = [" ".join(ocr_lines[k]["words"]) for k in line_keys]
-                                    translated_lines = _batch_translate(texts, source_code, target_code)
-                                    line_data = [(img_bbox.x0 + ocr_lines[k]["x"]*scale_x, img_bbox.y0 + ocr_lines[k]["y"]*scale_y, max(ocr_lines[k]["h"]*scale_y*0.85, 8), t) for k, t in zip(line_keys, translated_lines)]
-                                    # Redact each text line area in the image, then insert translation
-                                    for x0, y0, fs, _ in line_data:
-                                        page.add_redact_annot(_fitz.Rect(x0, y0, img_bbox.x1, y0 + fs*1.3), fill=(1,1,1))
-                                    page.apply_redactions()
-                                    for x0, y0, fs, t in line_data:
-                                        page.insert_text(_fitz.Point(x0, y0+fs), t, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
-
                     # --- Build body from stored translation using original PDF line styles ---
                     heading_style = ParagraphStyle("H", fontName="DejaVu-Bold", fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=TA_LEFT)
                     subhead_style = ParagraphStyle("SH", fontName="DejaVu-Bold", fontSize=11, spaceBefore=8, spaceAfter=2, leading=14, alignment=TA_LEFT)
