@@ -563,11 +563,26 @@ def download_translation(
                             })
 
                     story = []
+                    skip_toc = False
+                    reached_chapter_1 = False
                     for record in translated_records:
                         p = record["text"].strip()
                         source_record = record["source"]
-                        if source_record and not (7 <= source_record["page_number"] <= 99):
+                        # Skip TOC section
+                        if not reached_chapter_1 and p and ("TABLE OF CONTENTS" in p.upper() or "YALIYOMO" in p.upper() or "ZVIRI MUKATI" in p.upper() or "TABLE DES" in p.upper() or "ÍNDICE" in p.upper() or "JEDWALI" in p.upper() or "ATỌKA" in p.upper()):
+                            skip_toc = True
                             continue
+                        if skip_toc:
+                            if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', p, _re.IGNORECASE) and "....." not in p:
+                                skip_toc = False
+                                reached_chapter_1 = True
+                            else:
+                                continue
+                        if not reached_chapter_1:
+                            if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', p, _re.IGNORECASE) and "....." not in p:
+                                reached_chapter_1 = True
+                            else:
+                                continue
                         if source_record and _skip_body_record(source_record):
                             continue
                         if not p:
@@ -576,12 +591,24 @@ def download_translation(
                         safe = p.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                         is_source_bold = bool(source_record and source_record["bold"])
                         source_size = float(source_record["size"] if source_record else 11)
-                        if is_source_bold and source_size >= 14:
+                        # Pattern-based overrides (reliable regardless of source pairing)
+                        is_chapter = bool(_re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', p, _re.IGNORECASE))
+                        is_allcaps = len(p) < 80 and p.isupper() and len(p) > 3
+                        is_lettered = bool(_re.match(r'^[a-zA-Z]\) .{2,}', p) and len(p) < 120)
+                        if is_chapter:
                             story.append(Spacer(1, 0.15*inch))
                             story.append(Paragraph(safe, heading_style))
                             story.append(Spacer(1, 0.08*inch))
+                        elif is_allcaps or is_lettered or (is_source_bold and source_size >= 14):
+                            story.append(Spacer(1, 0.05*inch))
+                            story.append(Paragraph(safe, subhead_style))
                         elif is_source_bold:
                             story.append(Paragraph(safe, subhead_style))
+                        elif _re.match(r'^\d+\. ', p):
+                            content = _re.sub(r'^\d+\.\s*', '', p)
+                            has_caps = bool(_re.search(r'[A-Z]{3,}', content))
+                            is_title = len(content) <= 50 and not _re.search(r'\b(is|are|was|has|have)\b', content, _re.IGNORECASE)
+                            story.append(Paragraph(safe, subhead_style if (is_title or has_caps) else body_style))
                         elif _re.match(r'^\([ivxabc]+\)', p):
                             story.append(Paragraph(safe, indent_style))
                         else:
