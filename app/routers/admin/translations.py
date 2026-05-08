@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import get_db
 from app.models import Translation, TranslationJob
+from app.models.book import Book
 from app.utils.security import require_role, get_current_user
 from app.models.user import User
 from app.services.translation_service import TranslationService
@@ -304,12 +305,35 @@ def get_translation_detail(
 def download_translation(
     translation_id: str,
     format: str = "pdf",
+    cache_variant: str | None = Query(
+        None,
+        pattern=r"^[A-Za-z0-9_-]{1,40}$",
+        description="Optional suffix for writing/reading a separate cached PDF variant.",
+    ),
+    refresh_cache: bool = False,
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    # Delegate to student download which has the full rendering logic
-    from app.routers.student.translate import download_translation as student_download
-    return student_download(translation_id=translation_id, format=format, current_user=current_user, db=db)
+    import uuid
+    try:
+        trans_uuid = uuid.UUID(translation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid translation_id format")
+    translation = TranslationService.get_translation(db, trans_uuid)
+    if not translation:
+        raise HTTPException(status_code=404, detail="Translation not found")
+    if translation.status != "done":
+        raise HTTPException(status_code=400, detail="Translation not complete yet")
+    # Use the same rendering logic as the student endpoint
+    from app.routers.student.translate import download_translation as _student_dl
+    return _student_dl(
+        translation_id=translation_id,
+        format=format,
+        cache_variant=cache_variant,
+        refresh_cache=refresh_cache,
+        current_user=current_user,
+        db=db,
+    )
 
 
 @router.post("/translate")
