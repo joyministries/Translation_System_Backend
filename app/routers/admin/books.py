@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query
+from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Book
+from app.models import Book, Exam, AnswerKey
+from app.models.translation import Translation, TranslationJob
 from app.utils.file_utils import validate_mime_type, save_upload_securely
 from app.utils.security import require_role
 from app.models.user import User
@@ -86,7 +88,7 @@ def list_books(
     ),
     db: Session = Depends(get_db),
 ):
-    query = db.query(Book)
+    query = db.query(Book).order_by(desc(Book.created_at))
 
     total = query.count()
     books = query.offset(skip).limit(limit).all()
@@ -109,11 +111,43 @@ def list_books(
 
 
 @router.delete("/{book_id}")
-def delete_book(book_id: str, db: Session = Depends(get_db)):
+def delete_book(
+    book_id: str,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     book = db.query(Book).filter(Book.id == book_id).first()
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
 
+    exam_ids = [row[0] for row in db.query(Exam.id).filter(Exam.book_id == book.id).all()]
+    translation_ids = [
+        row[0]
+        for row in db.query(Translation.id)
+        .filter(
+            or_(
+                (Translation.content_type == "book") & (Translation.content_id == book.id),
+                (Translation.content_type == "exam") & (Translation.content_id.in_(exam_ids or [book.id])),
+            )
+        )
+        .all()
+    ]
+
+    if translation_ids:
+        db.query(TranslationJob).filter(TranslationJob.translation_id.in_(translation_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(Translation).filter(Translation.id.in_(translation_ids)).delete(
+            synchronize_session=False
+        )
+
+    if exam_ids:
+        db.query(AnswerKey).filter(AnswerKey.exam_id.in_(exam_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(Exam).filter(Exam.id.in_(exam_ids)).delete(synchronize_session=False)
+
+    db.query(AnswerKey).filter(AnswerKey.book_id == book.id).delete(synchronize_session=False)
     db.delete(book)
     db.commit()
 

@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from sqlalchemy import text
 
 from app.config import settings
 from app.database import engine, Base
@@ -9,6 +10,12 @@ from app.routers import admin, student, auth
 from fastapi import APIRouter
 
 Base.metadata.create_all(bind=engine)
+
+try:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255)"))
+except Exception:
+    pass
 
 # Run seed on startup (safe — skips if data already exists)
 try:

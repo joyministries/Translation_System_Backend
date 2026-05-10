@@ -289,8 +289,169 @@ def download_translation(
                     orig_doc = _fitz.open(f"/app/storage/{book.file_path}")
                     last_page = len(orig_doc) - 1
 
-                    # --- Translate pages 1-6 in-place using overlay method ---
-                    for page_num in range(min(6, last_page - 1)):
+                    chapter_1_pattern = _re.compile(
+                        r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*1\b',
+                        _re.IGNORECASE,
+                    )
+
+                    def _find_chapter_1_page_index():
+                        start_idx = max((book.first_content_page or 5) - 1, 0)
+                        for idx in range(start_idx, len(orig_doc)):
+                            page_text = orig_doc[idx].get_text("text", sort=True)
+                            for raw_line in page_text.splitlines():
+                                line = raw_line.strip()
+                                if not line:
+                                    continue
+                                if chapter_1_pattern.match(line) and "....." not in line:
+                                    return idx
+                        return min(6, last_page - 1) + 1
+
+                    def _is_flowchart_page(page):
+                        page_text = page.get_text("text", sort=True)
+                        upper = page_text.upper()
+                        return (
+                            "FLOW CHART" in upper
+                            or "CHATI INOTEVERA" in upper
+                            or "CREDIT HOURS" in upper
+                            or "CERTIFICATE IN MINISTRY" in upper
+                        )
+
+                    body_start_page_idx = _find_chapter_1_page_index()
+                    front_matter_end_idx = max(0, min(body_start_page_idx - 1, last_page - 1))
+
+                    def _extract_text_blocks(page, split_paragraphs: bool = False):
+                        extracted_blocks = []
+                        for b in page.get_text("dict")["blocks"]:
+                            if b.get("type") != 0:
+                                continue
+
+                            if not split_paragraphs:
+                                current_text = ""
+                                current_bold = None
+                                current_bbox = list(b["bbox"])
+                                for line in b.get("lines", []):
+                                    for span in line.get("spans", []):
+                                        t = span["text"]
+                                        if not t.strip():
+                                            current_text += t
+                                            continue
+                                        is_bold = "Bold" in span.get("font", "")
+                                        if current_bold is None:
+                                            current_bold = is_bold
+                                        if is_bold != current_bold:
+                                            if current_text.strip():
+                                                ct = current_text.strip()
+                                                only_url = bool(_re.match(r'^(https?://\S+|www\.\S+|[\w.+-]+@[\w-]+\.\w+)\s*$', ct))
+                                                if not ct.startswith("©") and not only_url:
+                                                    extracted_blocks.append((tuple(current_bbox), ct, current_bold and len(ct) < 80))
+                                            current_text = t
+                                            current_bold = is_bold
+                                        else:
+                                            current_text += t
+                                if current_text.strip() and current_bold is not None:
+                                    ct = current_text.strip()
+                                    only_url = bool(_re.match(r'^(https?://\S+|www\.\S+|[\w.+-]+@[\w-]+\.\w+)\s*$', ct))
+                                    if not ct.startswith("©") and not only_url:
+                                        extracted_blocks.append((tuple(b["bbox"]), ct, current_bold and len(ct) < 80))
+                                continue
+
+                            paragraph_lines = []
+                            for line in b.get("lines", []):
+                                spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
+                                if not spans:
+                                    continue
+                                text = " ".join(s.get("text", "").strip() for s in spans).strip()
+                                if not text or text.startswith("©"):
+                                    continue
+                                y0 = min(float(s["bbox"][1]) for s in spans)
+                                y1 = max(float(s["bbox"][3]) for s in spans)
+                                paragraph_lines.append({
+                                    "text": text,
+                                    "bold": any("Bold" in s.get("font", "") for s in spans),
+                                    "bbox": (
+                                        min(float(s["bbox"][0]) for s in spans),
+                                        y0,
+                                        max(float(s["bbox"][2]) for s in spans),
+                                        y1,
+                                    ),
+                                    "y0": y0,
+                                    "y1": y1,
+                                })
+
+                            current_group = []
+                            for line in paragraph_lines:
+                                if not current_group:
+                                    current_group.append(line)
+                                    continue
+
+                                prev = current_group[-1]
+                                gap = line["y0"] - prev["y1"]
+                                new_paragraph = gap > 10
+                                if new_paragraph:
+                                    text = " ".join(item["text"] for item in current_group).strip()
+                                    only_url = bool(_re.match(r'^(https?://\S+|www\.\S+|[\w.+-]+@[\w-]+\.\w+)\s*$', text))
+                                    if text and not only_url:
+                                        bbox = (
+                                            min(item["bbox"][0] for item in current_group),
+                                            min(item["bbox"][1] for item in current_group),
+                                            max(item["bbox"][2] for item in current_group),
+                                            max(item["bbox"][3] for item in current_group),
+                                        )
+                                        is_bold = current_group[0]["bold"] and len(text) < 120
+                                        extracted_blocks.append((bbox, text, is_bold))
+                                    current_group = [line]
+                                else:
+                                    current_group.append(line)
+
+                            if current_group:
+                                text = " ".join(item["text"] for item in current_group).strip()
+                                only_url = bool(_re.match(r'^(https?://\S+|www\.\S+|[\w.+-]+@[\w-]+\.\w+)\s*$', text))
+                                if text and not only_url:
+                                    bbox = (
+                                        min(item["bbox"][0] for item in current_group),
+                                        min(item["bbox"][1] for item in current_group),
+                                        max(item["bbox"][2] for item in current_group),
+                                        max(item["bbox"][3] for item in current_group),
+                                    )
+                                    is_bold = current_group[0]["bold"] and len(text) < 120
+                                    extracted_blocks.append((bbox, text, is_bold))
+                        if split_paragraphs and extracted_blocks:
+                            merged_blocks = []
+                            for bbox, text, is_bold in extracted_blocks:
+                                if not merged_blocks:
+                                    merged_blocks.append([list(bbox), text, is_bold])
+                                    continue
+
+                                prev_bbox, prev_text, prev_bold = merged_blocks[-1]
+                                same_column = abs(prev_bbox[0] - bbox[0]) < 20 and abs(prev_bbox[2] - bbox[2]) < 80
+                                vertical_gap = bbox[1] - prev_bbox[3]
+                                prev_incomplete = not _re.search(r'[.!?:"”]$', prev_text.strip())
+                                next_continuation = bool(text[:1].islower()) or bool(_re.match(r'^(the\b|copy\b|copyright\b|used by\b|all rights\b)', text.strip(), _re.IGNORECASE))
+                                merge_adjacent = (
+                                    same_column
+                                    and vertical_gap <= 18
+                                    and (
+                                        (prev_bold or is_bold)
+                                        or (prev_incomplete and next_continuation)
+                                    )
+                                )
+
+                                if merge_adjacent:
+                                    prev_bbox[0] = min(prev_bbox[0], bbox[0])
+                                    prev_bbox[1] = min(prev_bbox[1], bbox[1])
+                                    prev_bbox[2] = max(prev_bbox[2], bbox[2])
+                                    prev_bbox[3] = max(prev_bbox[3], bbox[3])
+                                    merged_blocks[-1][1] = f"{prev_text} {text}".strip()
+                                    merged_blocks[-1][2] = False if len(merged_blocks[-1][1]) > 120 else (prev_bold and is_bold)
+                                else:
+                                    merged_blocks.append([list(bbox), text, False if len(text) > 120 else is_bold])
+
+                            extracted_blocks = [(tuple(b), t, bold) for b, t, bold in merged_blocks]
+
+                        return extracted_blocks
+
+                    # --- Translate front matter in-place using overlay method ---
+                    for page_num in range(front_matter_end_idx + 1):
                         page = orig_doc[page_num]
                         if page_num == 0:
                             continue  # keep cover as-is only
@@ -327,40 +488,8 @@ def download_translation(
                                     page.insert_text(_fitz.Point(x, y), trans, fontsize=fs, fontname=fontname, fontfile=fontfile, color=color)
                             continue
                         # Translate text blocks
-                        text_blocks = []
-                        for b in page.get_text("dict")["blocks"]:
-                            if b.get("type") != 0: continue
-                            # Split block into bold/non-bold groups for proper heading separation
-                            current_text = ""
-                            current_bold = None
-                            current_bbox = list(b["bbox"])
-                            for line in b.get("lines", []):
-                                for span in line.get("spans", []):
-                                    t = span["text"]
-                                    if not t.strip():
-                                        current_text += t
-                                        continue
-                                    is_bold = "Bold" in span.get("font", "")
-                                    if current_bold is None:
-                                        current_bold = is_bold
-                                    if is_bold != current_bold:
-                                        if current_text.strip():
-                                            ct = current_text.strip()
-                                            import re as _re_skip
-                                            _is_only_url = bool(_re_skip.match(r'^(https?://\S+|www\.\S+|[\w.+-]+@[\w-]+\.\w+)\s*$', ct))
-                                            if not ct.startswith("©") and not _is_only_url:
-                                                # Only mark as bold if it's a short heading, not long body text
-                                                text_blocks.append((tuple(current_bbox), ct, current_bold and len(ct) < 80))
-                                        current_text = t
-                                        current_bold = is_bold
-                                    else:
-                                        current_text += t
-                            if current_text.strip() and current_bold is not None:
-                                ct = current_text.strip()
-                                import re as _re_skip2
-                                _is_only_url2 = bool(_re_skip2.match(r'^(https?://\S+|www\.\S+|[\w.+-]+@[\w-]+\.\w+)\s*$', ct))
-                                if not ct.startswith("©") and not _is_only_url2:
-                                    text_blocks.append((tuple(b["bbox"]), ct, current_bold and len(ct) < 80))
+                        split_front_matter_paragraphs = page_num in {2, 4}
+                        text_blocks = _extract_text_blocks(page, split_paragraphs=split_front_matter_paragraphs)
                         if text_blocks:
                             # For TOC page: use stored translation lines by position
                             stored_lookup = {}
@@ -375,15 +504,15 @@ def download_translation(
                             translated = _batch_translate([t for _, t, _ in text_blocks], source_code, target_code)
                             # Override TOC lines with stored translation
                             translated = [stored_lookup.get(i, trans) for i, trans in enumerate(translated)]
-                            if page_num == 3:
-                                # Page 4: collect ALL redactions (text + OCR image) then apply once
+                            if page_num == 3 or _is_flowchart_page(page):
+                                # Flowchart/examination page: collect ALL redactions (text + OCR image) then apply once
                                 all_inserts = []  # (type, args)
 
                                 # Text blocks
-                                for (bbox, _, _b), trans in zip(text_blocks, translated):
+                                for (bbox, orig_text, _b), trans in zip(text_blocks, translated):
                                     page.add_redact_annot(_fitz.Rect(bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2), fill=(1,1,1))
                                     rect = _fitz.Rect(bbox)
-                                    all_inserts.append(("text", rect, trans))
+                                    all_inserts.append(("text", rect, trans, orig_text))
 
                                 # OCR image blocks
                                 for b in page.get_text("dict")["blocks"]:
@@ -418,20 +547,42 @@ def download_translation(
                                 page.apply_redactions()
 
                                 # Now insert all translated text
+                                all_inserts.sort(
+                                    key=lambda item: item[1].y0 if item[0] == "text" else item[2]
+                                )
                                 p3_y_cursor = None
                                 for item in all_inserts:
                                     if item[0] == "text":
-                                        _, rect, trans = item
+                                        _, rect, trans, orig_text = item
                                         if not trans.strip(): continue
                                         y_start = p3_y_cursor if p3_y_cursor is not None else rect.y0
                                         y_start = max(y_start, rect.y0)
-                                        # Split at ALL CAPS sentences (like NDAPOTA IVA...)
+                                        # Keep the page-4 warning sentence as one caps line.
                                         import re as _re3
-                                        parts = _re3.split(r'(?=\b[A-Z]{3}[A-Z\s]+\.)', trans)
+                                        source_has_warning = "PLEASE ENSURE" in orig_text.upper()
+                                        caps_match = _re3.search(r'\b[A-Z]{3,}(?:\s+[A-Z]{2,})+\.', trans)
+                                        if source_has_warning:
+                                            sentence_parts = [p.strip() for p in _re3.split(r'(?<=[.!?])\s+', trans.strip()) if p.strip()]
+                                            if len(sentence_parts) >= 2:
+                                                before = " ".join(sentence_parts[:-1]).strip()
+                                                warning = sentence_parts[-1].strip()
+                                                parts = [p for p in [before, warning] if p]
+                                            elif caps_match:
+                                                before = trans[:caps_match.start()].strip()
+                                                warning = caps_match.group(0).strip()
+                                                parts = [p for p in [before, warning] if p]
+                                            else:
+                                                parts = [trans]
+                                        elif caps_match:
+                                            before = trans[:caps_match.start()].strip()
+                                            warning = caps_match.group(0).strip()
+                                            parts = [p for p in [before, warning] if p]
+                                        else:
+                                            parts = [trans]
                                         for part in parts:
                                             part = part.strip()
                                             if not part: continue
-                                            is_caps_line = part == part.upper() and len(part) > 10
+                                            is_caps_line = (part == part.upper() and len(part) > 10) or (source_has_warning and part == parts[-1])
                                             fn = "dejvb" if is_caps_line else "dejv"
                                             ff = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if is_caps_line else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
                                             expanded = _fitz.Rect(rect.x0, y_start, page.rect.x1 - 57, page.rect.y1 - 20)
@@ -477,19 +628,36 @@ def download_translation(
                                         if pagenum:
                                             page.insert_text(_fitz.Point(right_x - num_w, y), pagenum, fontsize=fs, fontname="helv", color=(0,0,0))
                                     else:
-                                        fontfile_use = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if is_bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-                                        fontname_use = "dejvb" if is_bold else "dejv"
-                                        fs_use = 13 if is_bold else 10
+                                        front_matter_body = split_front_matter_paragraphs and len(orig_text) > 40
+                                        force_plain = front_matter_body or any(
+                                            marker in orig_text.lower()
+                                            for marker in [
+                                                "copyright",
+                                                "published in",
+                                                "all rights reserved",
+                                                "copy of this book",
+                                                "digital transfer",
+                                                "joy ministries",
+                                                "p.o. box",
+                                                "email:",
+                                            ]
+                                        )
+                                        use_bold = is_bold and not force_plain
+                                        fontfile_use = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if use_bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+                                        fontname_use = "dejvb" if use_bold else "dejv"
+                                        fs_use = 13 if use_bold else 10
                                         bbox_key = (round(bbox[0]), round(bbox[1]))
                                         y_start = y_cursor.get(bbox_key, rect.y0)
-                                        render_rect = _fitz.Rect(rect.x0, y_start, rect.x1, page.rect.y1 - 20)
+                                        front_matter_heading = split_front_matter_paragraphs and use_bold and len(orig_text) <= 80
+                                        render_x1 = page.rect.x1 - 57 if (front_matter_body or front_matter_heading) else rect.x1
+                                        render_rect = _fitz.Rect(rect.x0, y_start, render_x1, page.rect.y1 - 20)
                                         for fs in [fs_use, fs_use-2, 7]:
                                             result = page.insert_textbox(render_rect, trans, fontsize=fs, fontname=fontname_use, fontfile=fontfile_use, color=(0,0,0))
                                             if result >= 0:
                                                 # Estimate height used and advance cursor
                                                 tw = _fitz.get_text_length(trans, fontname="helv", fontsize=fs)
                                                 n_lines = max(1, -(-int(tw) // max(int(render_rect.width), 1)))
-                                                gap_after = fs * 1.5 if is_bold else fs * 0.3
+                                                gap_after = fs * 1.5 if use_bold else fs * 0.6
                                                 y_cursor[bbox_key] = y_start + n_lines * fs * 1.3 + gap_after
                                                 break
                     # --- Build body from stored translation using original PDF line styles ---
@@ -518,7 +686,7 @@ def download_translation(
 
                     def _source_line_records():
                         records = []
-                        start_page = max((book.first_content_page or 5) - 1, 0)
+                        start_page = min(max(body_start_page_idx, 0), len(orig_doc))
 
                         def _normalize_line(value):
                             return _re.sub(r"\s+", " ", value or "").strip()
@@ -636,14 +804,23 @@ def download_translation(
                         is_chapter = bool(_re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', p, _re.IGNORECASE))
                         is_allcaps = len(p) < 80 and p.isupper() and len(p) > 3
                         is_lettered = bool(_re.match(r'^[a-zA-Z]\) .{2,}', p) and len(p) < 120)
+                        looks_like_sentence = (
+                            len(p) > 70
+                            or p.endswith((".", ",", ";", ":", "?", "!", "”"))
+                            or len(_re.findall(r'\b[a-zà-ÿ]{3,}\b', p)) >= 8
+                        )
+                        safe_source_bold = (
+                            is_source_bold
+                            and source_size >= 12
+                            and len(p) <= 90
+                            and not looks_like_sentence
+                        )
                         if is_chapter:
                             story.append(Spacer(1, 0.15*inch))
                             story.append(Paragraph(safe, heading_style))
                             story.append(Spacer(1, 0.08*inch))
-                        elif is_allcaps or is_lettered or (is_source_bold and source_size >= 14):
+                        elif is_allcaps or is_lettered or safe_source_bold:
                             story.append(Spacer(1, 0.05*inch))
-                            story.append(Paragraph(safe, subhead_style))
-                        elif is_source_bold:
                             story.append(Paragraph(safe, subhead_style))
                         elif _re.match(r'^\d+\. ', p):
                             content = _re.sub(r'^\d+\.\s*', '', p)
@@ -688,18 +865,18 @@ def download_translation(
                                     if p100.insert_textbox(rect, trans, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0)) >= 0:
                                         break
 
-                    # --- Assemble: first 6 pages (translated in-place) + body + last 2 pages ---
+                    # --- Assemble: translated front matter + body + last 2 pages ---
                     mod_buf = _io.BytesIO()
                     orig_doc.save(mod_buf)
                     mod_doc = _fitz.open("pdf", mod_buf.getvalue())
 
                     out = _fitz.open()
-                    out.insert_pdf(mod_doc, from_page=0, to_page=min(5, last_page))
+                    out.insert_pdf(mod_doc, from_page=0, to_page=front_matter_end_idx)
                     if body_bytes:
                         body_fitz = _fitz.open("pdf", body_bytes)
                         out.insert_pdf(body_fitz)
-                    if last_page >= 6:
-                        out.insert_pdf(orig_doc, from_page=max(last_page-1, 6), to_page=last_page)
+                    if last_page >= body_start_page_idx:
+                        out.insert_pdf(orig_doc, from_page=max(last_page - 1, body_start_page_idx), to_page=last_page)
 
                     final_buf = _io.BytesIO()
                     out.save(final_buf)

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -46,7 +47,7 @@ def list_books(
     current_user: User = Depends(require_role("student", "admin")),
     db: Session = Depends(get_db),
 ):
-    query = db.query(Book).filter(Book.extraction_status == "done")
+    query = db.query(Book).filter(Book.extraction_status == "done").order_by(desc(Book.created_at))
     total = query.count()
     books = query.offset(skip).limit(limit).all()
 

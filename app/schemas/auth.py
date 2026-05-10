@@ -20,6 +20,7 @@ class RefreshRequest(BaseModel):
 class UserResponse(BaseModel):
     id: str
     email: str
+    full_name: str | None = None
     role: str
     is_active: bool
     institution_id: str | None = None
@@ -32,6 +33,7 @@ class UserResponse(BaseModel):
 
 class RegisterRequest(BaseModel):
     email: EmailStr
+    full_name: str | None = None
     password: str | None = None
     role: str
     institution_id: str | None = None
@@ -40,6 +42,15 @@ class RegisterRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     old_password: str
+    new_password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    token: str
     new_password: str
 
 

@@ -50,3 +50,42 @@ Curriculum Management System"""
         except Exception as e:
             logger.error(f"Failed to send email: {e}")
             return False
+
+    @staticmethod
+    def send_password_reset_email(to_email: str, reset_token: str) -> bool:
+        if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
+            logger.warning("SMTP credentials not configured")
+            return False
+
+        msg = MIMEMultipart()
+        msg["From"] = settings.SMTP_FROM
+        msg["To"] = to_email
+        msg["Subject"] = "Password Reset Request"
+
+        body = f"""Hello,
+
+We received a request to reset your password.
+
+Use this reset token to complete the process:
+{reset_token}
+
+If you did not request this reset, you can ignore this email.
+
+Best regards,
+Curriculum Management System"""
+
+        msg.attach(MIMEText(body, "plain"))
+
+        try:
+            logger.info(
+                f"Sending password reset email to {to_email} via {settings.SMTP_HOST}:{settings.SMTP_PORT}"
+            )
+            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+                server.starttls()
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                server.sendmail(settings.SMTP_FROM, to_email, msg.as_string())
+            logger.info(f"Password reset email sent successfully to {to_email}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send password reset email: {e}")
+            return False

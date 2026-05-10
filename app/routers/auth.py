@@ -11,6 +11,8 @@ from app.schemas.auth import (
     UserResponse,
     MessageResponse,
     ChangePasswordRequest,
+    ForgotPasswordRequest,
+    PasswordResetConfirmRequest,
 )
 from app.services.auth_service import AuthService
 from app.services.email_service import EmailService
@@ -20,6 +22,8 @@ from app.utils.security import (
     decode_token,
     verify_password,
     get_password_hash,
+    touch_user_session,
+    clear_user_session,
 )
 from app.models import User
 
@@ -38,6 +42,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
 
     access_token, refresh_token = AuthService.create_tokens(user)
     AuthService.update_last_login(db, user.id)
+    touch_user_session(str(user.id))
 
     return TokenResponse(
         access_token=access_token,
@@ -73,6 +78,7 @@ def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
     access_token, refresh_token = AuthService.create_tokens(user)
 
     AuthService.blacklist_token(request.refresh_token)
+    touch_user_session(str(user.id))
 
     return TokenResponse(
         access_token=access_token,
@@ -89,6 +95,7 @@ def logout(
     db: Session = Depends(get_db),
 ):
     AuthService.blacklist_token(request.refresh_token)
+    clear_user_session(str(current_user.id))
     return MessageResponse(message="Logged out successfully")
 
 
@@ -123,6 +130,7 @@ def register(
             request.email,
             request.role,
             institution_uuid,
+            request.full_name,
         )
     else:
         user = AuthService.register(
@@ -131,11 +139,13 @@ def register(
             request.password,
             request.role,
             institution_uuid,
+            request.full_name,
         )
 
     return UserResponse(
         id=str(user.id),
         email=user.email,
+        full_name=user.full_name,
         role=user.role,
         is_active=user.is_active,
         institution_id=str(user.institution_id) if user.institution_id else None,
@@ -152,6 +162,7 @@ def get_me(
     return UserResponse(
         id=str(current_user.id),
         email=current_user.email,
+        full_name=current_user.full_name,
         role=current_user.role,
         is_active=current_user.is_active,
         institution_id=str(current_user.institution_id)
@@ -185,28 +196,39 @@ def change_password(
     return MessageResponse(message="Password changed successfully")
 
 
+@router.post("/forgot-password", response_model=MessageResponse)
+def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    user = AuthService.get_user_by_email(db, request.email)
+    if user and user.is_active:
+        reset_token = AuthService.generate_password_reset_token()
+        AuthService.store_password_reset_token(reset_token, user.id)
+        EmailService.send_password_reset_email(user.email, reset_token)
+
+    return MessageResponse(
+        message="If an account with that email exists, a password reset email has been sent."
+    )
+
+
 @router.post("/reset-password", response_model=MessageResponse)
 def reset_password(
-    user_id: str,
-    current_user: User = Depends(require_role("admin")),
+    request: PasswordResetConfirmRequest,
     db: Session = Depends(get_db),
 ):
-    """Admin resets a user's password to a new temporary password."""
     try:
-        user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+        user_id = AuthService.consume_password_reset_token(request.token)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user_id format")
+        user_id = None
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    temp_password = AuthService.generate_temp_password()
-    user.hashed_password = get_password_hash(temp_password)
-    user.must_change_password = True
+    user.hashed_password = get_password_hash(request.new_password)
+    user.must_change_password = False
     db.commit()
 
-    EmailService.send_welcome_email(user.email, temp_password)
-
-    return MessageResponse(
-        message=f"Password reset. Temporary password sent to {user.email}"
-    )
+    return MessageResponse(message="Password reset successfully")

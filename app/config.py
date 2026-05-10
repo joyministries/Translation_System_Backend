@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    SESSION_IDLE_TIMEOUT_MINUTES: int = 1440
 
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587

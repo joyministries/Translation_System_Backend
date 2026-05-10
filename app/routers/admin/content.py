@@ -146,6 +146,7 @@ def list_books(
     query = db.query(Book)
     if institution_id:
         query = query.filter(Book.institution_id == institution_id)
+    query = query.order_by(desc(Book.created_at))
 
     total = query.count()
     books = query.offset(skip).limit(limit).all()
