@@ -418,14 +418,34 @@ def download_translation(
                                 page.apply_redactions()
 
                                 # Now insert all translated text
+                                p3_y_cursor = None
                                 for item in all_inserts:
                                     if item[0] == "text":
                                         _, rect, trans = item
-                                        # Use full page width rect for long text to prevent overlap
-                                        expanded = _fitz.Rect(rect.x0, rect.y0, page.rect.x1 - rect.x0, page.rect.y1 - 20)
-                                        for fs in [10, 9, 8, 7]:
-                                            if page.insert_textbox(expanded, trans, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0)) >= 0:
-                                                break
+                                        if not trans.strip(): continue
+                                        y_start = p3_y_cursor if p3_y_cursor is not None else rect.y0
+                                        y_start = max(y_start, rect.y0)
+                                        # Split at ALL CAPS sentences (like NDAPOTA IVA...)
+                                        import re as _re3
+                                        parts = _re3.split(r'(?=\b[A-Z]{3}[A-Z\s]+\.)', trans)
+                                        for part in parts:
+                                            part = part.strip()
+                                            if not part: continue
+                                            is_caps_line = part == part.upper() and len(part) > 10
+                                            fn = "dejvb" if is_caps_line else "dejv"
+                                            ff = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if is_caps_line else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+                                            expanded = _fitz.Rect(rect.x0, y_start, page.rect.x1 - 57, page.rect.y1 - 20)
+                                            if y_start >= page.rect.y1 - 25 or not expanded.is_valid: break
+                                            for fs in [10, 9, 8, 7]:
+                                                result = page.insert_textbox(expanded, part, fontsize=fs, fontname=fn, fontfile=ff, color=(0,0,0))
+                                                if result >= 0:
+                                                    tw = _fitz.get_text_length(part, fontname="helv", fontsize=fs)
+                                                    n_lines = max(1, -(-int(tw) // max(int(expanded.width), 1)))
+                                                    y_start += n_lines * fs * 1.3 + fs * 0.5
+                                                    break
+                                            else:
+                                                y_start += 15
+                                        p3_y_cursor = y_start
                                     else:
                                         _, x0, y0, fs, t = item
                                         page.insert_text(_fitz.Point(x0, y0+fs), t, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
