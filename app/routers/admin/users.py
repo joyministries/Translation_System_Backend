@@ -2,6 +2,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import desc
 
 from app.database import get_db
 from app.models import User, Book, Exam, AnswerKey
@@ -77,6 +78,7 @@ def create_user(
 
 @router.get("")
 def list_users(
+    page: int = 1,
     skip: int = 0,
     limit: int = 20,
     role: str | None = None,
@@ -94,8 +96,15 @@ def list_users(
         except ValueError:
             pass
 
+    if page < 1:
+        page = 1
+    if limit < 1:
+        limit = 20
+
+    offset = skip if skip > 0 else (page - 1) * limit
+
     total = query.count()
-    users = query.offset(skip).limit(limit).all()
+    users = query.order_by(desc(User.created_at)).offset(offset).limit(limit).all()
 
     return {
         "total": total,
@@ -167,6 +176,16 @@ def update_user(
         "institution_id": str(user.institution_id) if user.institution_id else None,
         "must_change_password": user.must_change_password,
     }
+
+
+@router.patch("/{user_id}")
+def patch_user(
+    user_id: str,
+    request: UpdateUserRequest,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    return update_user(user_id, request, current_user, db)
 
 
 @router.post("/{user_id}/reset-password")

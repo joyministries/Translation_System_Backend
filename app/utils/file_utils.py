@@ -1,6 +1,7 @@
 import os
 import uuid
 import magic
+from fastapi import UploadFile
 
 from app.config import settings
 
@@ -45,6 +46,37 @@ def save_upload_securely(file_bytes: bytes, mime_type: str) -> str:
         f.write(file_bytes)
 
     return filename
+
+
+async def save_upload_stream_securely(
+    upload: UploadFile, chunk_size: int = 1024 * 1024
+) -> tuple[str, str, int]:
+    header = await upload.read(4096)
+    if not header:
+        raise ValueError("Empty file")
+
+    mime_type = validate_mime_type(header, upload.filename or "")
+    if not mime_type:
+        raise ValueError("Invalid file type")
+
+    extension = ALLOWED_MIME_TYPES[mime_type]
+    filename = f"{uuid.uuid4()}{extension}"
+    storage_path = os.path.join(settings.STORAGE_ROOT, filename)
+    os.makedirs(settings.STORAGE_ROOT, exist_ok=True)
+
+    total_size = 0
+    with open(storage_path, "wb") as f:
+        f.write(header)
+        total_size += len(header)
+
+        while True:
+            chunk = await upload.read(chunk_size)
+            if not chunk:
+                break
+            f.write(chunk)
+            total_size += len(chunk)
+
+    return filename, mime_type, total_size
 
 
 def get_file_path(filename: str) -> str:

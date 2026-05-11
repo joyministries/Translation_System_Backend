@@ -56,3 +56,56 @@ class PasswordResetConfirmRequest(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+class AdminUserCreateRequest(BaseModel):
+    email: EmailStr
+    full_name: str
+    password: str | None = None
+    role: str
+    use_temp_password: bool = False
+
+
+class AdminUserUpdateRequest(BaseModel):
+    email: EmailStr | None = None
+    full_name: str | None = None
+    role: str | None = None
+    is_active: bool | None = None
+
+
+class AdminUserResponse(BaseModel):
+    id: str
+    email: EmailStr
+    full_name: str | None = None
+    role: str
+    is_active: bool
+    must_change_password: bool
+
+
+class AdminUserCreateResponse(BaseModel):
+    id: str
+    email: EmailStr
+    full_name: str
+    role: str
+    must_change_password: bool
+    temp_password: str | None = None
+
+
+class AdminUserListItem(BaseModel):
+    id: str
+    email: EmailStr
+    full_name: str | None = None
+    role: str
+    is_active: bool
+    created_at: str | None = None
+
+
+class AdminUserListResponse(BaseModel):
+    total: int
+    users: list[AdminUserListItem]
+
+
+class AdminResetPasswordResponse(BaseModel):
+    message: str
+    temporary_password: str
+    must_change_password: bool

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 import uuid
+import logging
 
 from app.database import get_db
 from app.schemas.auth import (
@@ -29,6 +30,7 @@ from app.models import User
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -202,7 +204,17 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     if user and user.is_active:
         reset_token = AuthService.generate_password_reset_token()
         AuthService.store_password_reset_token(reset_token, user.id)
-        EmailService.send_password_reset_email(user.email, reset_token)
+        sent = EmailService.send_password_reset_email(user.email, reset_token)
+        logger.info(
+            "Forgot-password email attempt for %s: sent=%s",
+            user.email,
+            sent,
+        )
+    else:
+        logger.info(
+            "Forgot-password requested for non-existent or inactive email: %s",
+            request.email,
+        )
 
     return MessageResponse(
         message="If an account with that email exists, a password reset email has been sent."

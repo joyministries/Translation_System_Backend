@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Book, Exam, AnswerKey
 from app.models.translation import Translation, TranslationJob
-from app.utils.file_utils import validate_mime_type, save_upload_securely
+from app.utils.file_utils import save_upload_stream_securely
 from app.utils.security import require_role
 from app.models.user import User
 
@@ -30,23 +30,22 @@ async def upload_book(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
-    file_bytes = await file.read()
-    if len(file_bytes) == 0:
-        raise HTTPException(status_code=400, detail="Empty file")
-
-    mime_type = validate_mime_type(file_bytes, file.filename or "")
-    if not mime_type:
+    try:
+        filename, mime_type, file_size_bytes = await save_upload_stream_securely(file)
+    except ValueError as exc:
+        detail = str(exc)
+        if detail == "Empty file":
+            raise HTTPException(status_code=400, detail=detail)
         raise HTTPException(
-            status_code=400, detail="Invalid file type. Only PDF, DOC, DOCX allowed."
-        )
-
-    filename = save_upload_securely(file_bytes, mime_type)
+            status_code=400,
+            detail="Invalid file type. Only PDF, DOC, DOCX allowed.",
+        ) from exc
 
     book = Book(
         title=title or file.filename,
         subject=subject,
         file_path=filename,
-        file_size_bytes=len(file_bytes),
+        file_size_bytes=file_size_bytes,
         uploaded_by=None,
         extraction_status="pending",
         first_content_page=first_content_page,

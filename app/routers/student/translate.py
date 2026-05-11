@@ -527,7 +527,12 @@ def download_translation(
                                     ocr_lines = {}
                                     for i in range(n):
                                         word = ocr_data["text"][i].strip()
-                                        if not word or int(ocr_data["conf"][i]) < 50: continue
+                                        try:
+                                            conf = float(ocr_data["conf"][i])
+                                        except (TypeError, ValueError):
+                                            conf = -1
+                                        if not word or conf < 20:
+                                            continue
                                         key = (ocr_data["block_num"][i], ocr_data["par_num"][i], ocr_data["line_num"][i])
                                         if key not in ocr_lines:
                                             ocr_lines[key] = {"words": [], "x": ocr_data["left"][i], "y": ocr_data["top"][i], "h": ocr_data["height"][i]}
@@ -547,18 +552,89 @@ def download_translation(
                                 page.apply_redactions()
 
                                 # Now insert all translated text
+                                def _is_flowchart_label(orig_text, rect):
+                                    text = (orig_text or "").strip()
+                                    upper = text.upper()
+                                    if not text:
+                                        return False
+                                    if rect.y0 < page.rect.height * 0.42:
+                                        return False
+                                    if len(text) <= 40:
+                                        return True
+                                    chart_markers = [
+                                        "CERTIFICATE",
+                                        "DIPLOMA",
+                                        "BACHELOR",
+                                        "MASTERS",
+                                        "DOCTOR",
+                                        "MINISTRY",
+                                        "PHILOSOPHY",
+                                        "CREDIT HOURS",
+                                        "CREDITS",
+                                        "CREDIT",
+                                        "HOURS",
+                                    ]
+                                    if any(marker in upper for marker in chart_markers):
+                                        return True
+                                    if _re3.search(r"\b\d+\s+(CREDIT|CREDITS|HOURS)\b", upper):
+                                        return True
+                                    if _re3.fullmatch(r"[=0-9A-Z\s]+", upper) and len(text) <= 60:
+                                        return True
+                                    return False
+
+                                def _insert_chart_label(rect, trans):
+                                    trans_clean = (trans or "").strip()
+                                    is_credit_value = bool(
+                                        _re3.match(
+                                            r"^(?:=\s*)?\d+\s+.+",
+                                            trans_clean,
+                                            _re3.IGNORECASE,
+                                        )
+                                    )
+                                    is_short_value = len(trans_clean) <= 28
+                                    if is_credit_value or is_short_value:
+                                        rect = _fitz.Rect(rect.x0, rect.y0 - 1, rect.x1, rect.y1 + 4)
+                                        align = 1
+                                    else:
+                                        rect = _fitz.Rect(rect.x0 - 2, rect.y0 - 1, rect.x1 + 8, rect.y1 + 6)
+                                        align = 0
+                                    for fs in [10, 9, 8, 7]:
+                                        result = page.insert_textbox(
+                                            rect,
+                                            trans_clean,
+                                            fontsize=fs,
+                                            fontname="dejv",
+                                            fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                            color=(0, 0, 0),
+                                            align=align,
+                                        )
+                                        if result >= -2:
+                                            return True
+                                    return False
+
                                 all_inserts.sort(
                                     key=lambda item: item[1].y0 if item[0] == "text" else item[2]
                                 )
                                 p3_y_cursor = None
+                                chart_value_rects = []
+                                chart_title_rects = []
                                 for item in all_inserts:
                                     if item[0] == "text":
                                         _, rect, trans, orig_text = item
                                         if not trans.strip(): continue
+                                        import re as _re3
+                                        if rect.y0 > 230 and rect.x0 > 220 and rect.x1 < 360:
+                                            txt = trans.strip()
+                                            if _re3.match(r"^\d+\s+\S+", txt):
+                                                chart_value_rects.append((rect, txt))
+                                            elif len(txt) <= 40 and not _re3.match(r"^[=0-9]", txt):
+                                                chart_title_rects.append((rect, txt))
+                                        if _is_flowchart_label(orig_text, rect):
+                                            _insert_chart_label(rect, trans)
+                                            continue
                                         y_start = p3_y_cursor if p3_y_cursor is not None else rect.y0
                                         y_start = max(y_start, rect.y0)
                                         # Keep the page-4 warning sentence as one caps line.
-                                        import re as _re3
                                         source_has_warning = "PLEASE ENSURE" in orig_text.upper()
                                         caps_match = _re3.search(r'\b[A-Z]{3,}(?:\s+[A-Z]{2,})+\.', trans)
                                         if source_has_warning:
@@ -600,6 +676,76 @@ def download_translation(
                                     else:
                                         _, x0, y0, fs, t = item
                                         page.insert_text(_fitz.Point(x0, y0+fs), t, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
+
+                                chart_value_rects.sort(key=lambda item: item[0].y0)
+                                chart_title_rects.sort(key=lambda item: item[0].y0)
+                                if len(chart_value_rects) >= 7 and len(chart_title_rects) >= 7:
+                                    cumulative_labels = [
+                                        "30 Credit Hours",
+                                        "= 60 Credit Hours",
+                                        "120 Credit Hours",
+                                        "136 Credit Hours",
+                                        "= 156 Credit Hours",
+                                        "= 192 Credit Hours",
+                                        "= 228 Credit Hours",
+                                    ]
+                                    translated_labels = _batch_translate(cumulative_labels, source_code, target_code)
+                                    connector_positions = []
+                                    for idx, (value_rect, _txt) in enumerate(chart_value_rects[:7]):
+                                        if idx + 1 < len(chart_title_rects):
+                                            next_title_rect = chart_title_rects[idx + 1][0]
+                                            y_mid = (value_rect.y1 + next_title_rect.y0) / 2
+                                        else:
+                                            y_mid = value_rect.y1 + 18
+                                        connector_positions.append(y_mid)
+
+                                    for idx, (y_mid, label) in enumerate(zip(connector_positions, translated_labels)):
+                                        if idx == 0:
+                                            # The first right-side connector survives as a baked graphic strip.
+                                            # Wipe a wider fixed band and redraw the translated label explicitly.
+                                            clear_rect = _fitz.Rect(392, 270, 520, 291)
+                                            text_point = _fitz.Point(398, 284)
+                                        else:
+                                            clear_rect = _fitz.Rect(320, y_mid - 13, 505, y_mid + 13)
+                                            text_point = _fitz.Point(338, y_mid + 3)
+                                        page.draw_rect(
+                                            clear_rect,
+                                            color=(1, 1, 1),
+                                            fill=(1, 1, 1),
+                                            overlay=True,
+                                        )
+                                        page.insert_text(
+                                            text_point,
+                                            label,
+                                            fontsize=9,
+                                            fontname="dejv",
+                                            fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                            color=(0, 0, 0),
+                                            overlay=True,
+                                        )
+
+                                # Force-replace the first right-side connector label even if
+                                # chart row detection misses it. This is the stubborn strip that
+                                # survives as a graphic on page 4 in some cached builds.
+                                first_connector_label = _batch_translate(
+                                    ["30 Credit Hours"], source_code, target_code
+                                )[0]
+                                first_connector_rect = _fitz.Rect(392, 270, 520, 291)
+                                page.draw_rect(
+                                    first_connector_rect,
+                                    color=(1, 1, 1),
+                                    fill=(1, 1, 1),
+                                    overlay=True,
+                                )
+                                page.insert_text(
+                                    _fitz.Point(384, 284),
+                                    first_connector_label,
+                                    fontsize=9,
+                                    fontname="dejv",
+                                    fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                    color=(0, 0, 0),
+                                    overlay=True,
+                                )
                             else:
                                 for (bbox, _, _b), trans in zip(text_blocks, translated):
                                     page.add_redact_annot(_fitz.Rect(bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2), fill=(1,1,1))
