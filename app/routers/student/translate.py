@@ -319,7 +319,7 @@ def download_translation(
                     body_start_page_idx = _find_chapter_1_page_index()
                     front_matter_end_idx = max(0, min(body_start_page_idx - 1, last_page - 1))
 
-                    def _extract_text_blocks(page, split_paragraphs: bool = False):
+                    def _extract_text_blocks(page, split_paragraphs: bool = False, aggressive_merge: bool = True):
                         extracted_blocks = []
                         for b in page.get_text("dict")["blocks"]:
                             if b.get("type") != 0:
@@ -386,7 +386,11 @@ def download_translation(
 
                                 prev = current_group[-1]
                                 gap = line["y0"] - prev["y1"]
-                                new_paragraph = gap > 10
+                                prev_text = prev["text"].strip()
+                                next_text = line["text"].strip()
+                                sentence_break = bool(_re.search(r'[.!?:"”]$', prev_text))
+                                continuation = bool(next_text[:1].islower())
+                                new_paragraph = gap > 8 or (gap > 4 and sentence_break and not continuation)
                                 if new_paragraph:
                                     text = " ".join(item["text"] for item in current_group).strip()
                                     only_url = bool(_re.match(r'^(https?://\S+|www\.\S+|[\w.+-]+@[\w-]+\.\w+)\s*$', text))
@@ -427,14 +431,18 @@ def download_translation(
                                 vertical_gap = bbox[1] - prev_bbox[3]
                                 prev_incomplete = not _re.search(r'[.!?:"”]$', prev_text.strip())
                                 next_continuation = bool(text[:1].islower()) or bool(_re.match(r'^(the\b|copy\b|copyright\b|used by\b|all rights\b)', text.strip(), _re.IGNORECASE))
-                                merge_adjacent = (
-                                    same_column
-                                    and vertical_gap <= 18
-                                    and (
-                                        (prev_bold or is_bold)
-                                        or (prev_incomplete and next_continuation)
+                                legal_continuation = bool(_re.match(r'^(the\b|copy\b|copyright\b|used by\b|all rights\b|yashandiswa\b|kodzero\b|munew\b|king james\b|version\b|de la bible\b)', text.strip(), _re.IGNORECASE))
+                                merge_adjacent = False
+                                if aggressive_merge:
+                                    merge_adjacent = (
+                                        same_column
+                                        and vertical_gap <= 18
+                                        and (
+                                            (prev_bold or is_bold)
+                                            or ((prev_incomplete and next_continuation) and len(prev_text) < 120 and len(text) < 120)
+                                            or (legal_continuation and len(prev_text) < 160 and len(text) < 160)
+                                        )
                                     )
-                                )
 
                                 if merge_adjacent:
                                     prev_bbox[0] = min(prev_bbox[0], bbox[0])
@@ -488,8 +496,12 @@ def download_translation(
                                     page.insert_text(_fitz.Point(x, y), trans, fontsize=fs, fontname=fontname, fontfile=fontfile, color=color)
                             continue
                         # Translate text blocks
-                        split_front_matter_paragraphs = page_num in {2, 4}
-                        text_blocks = _extract_text_blocks(page, split_paragraphs=split_front_matter_paragraphs)
+                        split_front_matter_paragraphs = page_num in {2, 4, 6}
+                        text_blocks = _extract_text_blocks(
+                            page,
+                            split_paragraphs=split_front_matter_paragraphs,
+                            aggressive_merge=(page_num == 4),
+                        )
                         if text_blocks:
                             # For TOC page: use stored translation lines by position
                             stored_lookup = {}
@@ -730,7 +742,7 @@ def download_translation(
                                 first_connector_label = _batch_translate(
                                     ["30 Credit Hours"], source_code, target_code
                                 )[0]
-                                first_connector_rect = _fitz.Rect(392, 270, 520, 291)
+                                first_connector_rect = _fitz.Rect(374, 269, 520, 292)
                                 page.draw_rect(
                                     first_connector_rect,
                                     color=(1, 1, 1),
@@ -738,7 +750,7 @@ def download_translation(
                                     overlay=True,
                                 )
                                 page.insert_text(
-                                    _fitz.Point(384, 284),
+                                    _fitz.Point(366, 284),
                                     first_connector_label,
                                     fontsize=9,
                                     fontname="dejv",
@@ -797,15 +809,121 @@ def download_translation(
                                         front_matter_heading = split_front_matter_paragraphs and use_bold and len(orig_text) <= 80
                                         render_x1 = page.rect.x1 - 57 if (front_matter_body or front_matter_heading) else rect.x1
                                         render_rect = _fitz.Rect(rect.x0, y_start, render_x1, page.rect.y1 - 20)
-                                        for fs in [fs_use, fs_use-2, 7]:
-                                            result = page.insert_textbox(render_rect, trans, fontsize=fs, fontname=fontname_use, fontfile=fontfile_use, color=(0,0,0))
-                                            if result >= 0:
-                                                # Estimate height used and advance cursor
-                                                tw = _fitz.get_text_length(trans, fontname="helv", fontsize=fs)
-                                                n_lines = max(1, -(-int(tw) // max(int(render_rect.width), 1)))
-                                                gap_after = fs * 1.5 if use_bold else fs * 0.6
-                                                y_cursor[bbox_key] = y_start + n_lines * fs * 1.3 + gap_after
-                                                break
+                                        bullet_items = []
+                                        address_items = []
+                                        forced_lines = []
+                                        if "•" in trans or "•" in orig_text:
+                                            bullet_items = [item.strip(" •") for item in trans.split("•") if item.strip(" •")]
+                                        elif page_num == 4 and any(
+                                            marker in orig_text.lower()
+                                            for marker in [
+                                                "published in south africa",
+                                                "joy ministries",
+                                                "p.o. box",
+                                                "south africa.",
+                                                "www.joyministries.com",
+                                                "email:",
+                                            ]
+                                        ):
+                                            continue
+                                        if bullet_items:
+                                            for fs in [fs_use, fs_use-2, 7]:
+                                                item_y = y_start
+                                                fits = True
+                                                for bullet_item in bullet_items:
+                                                    bullet_label = f"• {bullet_item}"
+                                                    item_rect = _fitz.Rect(render_rect.x0, item_y, render_rect.x1, page.rect.y1 - 20)
+                                                    result = page.insert_textbox(item_rect, bullet_label, fontsize=fs, fontname=fontname_use, fontfile=fontfile_use, color=(0,0,0))
+                                                    if result < 0:
+                                                        fits = False
+                                                        break
+                                                    tw = _fitz.get_text_length(bullet_label, fontname="helv", fontsize=fs)
+                                                    n_lines = max(1, -(-int(tw) // max(int(render_rect.width), 1)))
+                                                    item_y += n_lines * fs * 1.35 + fs * 0.35
+                                                if fits:
+                                                    y_cursor[bbox_key] = item_y + fs * 0.35
+                                                    break
+                                        elif forced_lines:
+                                            for fs in [fs_use, fs_use-2, 7]:
+                                                item_y = y_start
+                                                fits = True
+                                                for forced_line in forced_lines:
+                                                    item_rect = _fitz.Rect(render_rect.x0, item_y, render_rect.x1, page.rect.y1 - 20)
+                                                    result = page.insert_textbox(item_rect, forced_line, fontsize=fs, fontname=fontname_use, fontfile=fontfile_use, color=(0,0,0), align=0)
+                                                    if result < 0:
+                                                        fits = False
+                                                        break
+                                                    tw = _fitz.get_text_length(forced_line, fontname="helv", fontsize=fs)
+                                                    n_lines = max(1, -(-int(tw) // max(int(render_rect.width), 1)))
+                                                    item_y += n_lines * fs * 1.35 + fs * 0.45
+                                                if fits:
+                                                    y_cursor[bbox_key] = item_y + fs * 0.35
+                                                    break
+                                        elif address_items:
+                                            for fs in [fs_use, fs_use-2, 7]:
+                                                item_y = y_start
+                                                fits = True
+                                                for address_item in address_items:
+                                                    item_rect = _fitz.Rect(render_rect.x0, item_y, render_rect.x1, page.rect.y1 - 20)
+                                                    result = page.insert_textbox(item_rect, address_item, fontsize=fs, fontname=fontname_use, fontfile=fontfile_use, color=(0,0,0), align=1)
+                                                    if result < 0:
+                                                        fits = False
+                                                        break
+                                                    tw = _fitz.get_text_length(address_item, fontname="helv", fontsize=fs)
+                                                    n_lines = max(1, -(-int(tw) // max(int(render_rect.width), 1)))
+                                                    item_y += n_lines * fs * 1.35 + fs * 0.35
+                                                if fits:
+                                                    y_cursor[bbox_key] = item_y + fs * 0.35
+                                                    break
+                                        else:
+                                            for fs in [fs_use, fs_use-2, 7]:
+                                                result = page.insert_textbox(render_rect, trans, fontsize=fs, fontname=fontname_use, fontfile=fontfile_use, color=(0,0,0))
+                                                if result >= 0:
+                                                    # Estimate height used and advance cursor
+                                                    tw = _fitz.get_text_length(trans, fontname="helv", fontsize=fs)
+                                                    n_lines = max(1, -(-int(tw) // max(int(render_rect.width), 1)))
+                                                    gap_after = fs * 1.5 if use_bold else fs * 0.9
+                                                    y_cursor[bbox_key] = y_start + n_lines * fs * 1.35 + gap_after
+                                                    break
+
+                                if page_num == 4:
+                                    address_lines = [
+                                        "Publié en Afrique du Sud par JOY MINISTRIES",
+                                        "Boîte postale 15611, Lambton, Germiston",
+                                        "Afrique du Sud. 1414",
+                                        "www.joyministries.com",
+                                        "Courriel :",
+                                        "admin@joyministries.com",
+                                    ]
+                                    address_rect = _fitz.Rect(145, 290, 450, 395)
+                                    page.draw_rect(address_rect, color=(1,1,1), fill=(1,1,1), overlay=True)
+                                    y = 304
+                                    for idx, line in enumerate(address_lines):
+                                        rect = _fitz.Rect(150, y - 10, 445, y + 9)
+                                        page.insert_textbox(
+                                            rect,
+                                            line,
+                                            fontsize=10,
+                                            fontname="dejv",
+                                            fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                            color=(0,0,0),
+                                            align=1,
+                                        )
+                                        y += 16 if idx < 3 else 15
+
+                                if page_num == 6:
+                                    century_line = _batch_translate(["2nd Century AD."], source_code, target_code)[0]
+                                    century_rect = _fitz.Rect(56, 436, 250, 452)
+                                    page.draw_rect(century_rect, color=(1,1,1), fill=(1,1,1), overlay=True)
+                                    page.insert_text(
+                                        _fitz.Point(58, 447),
+                                        century_line,
+                                        fontsize=10,
+                                        fontname="dejv",
+                                        fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                        color=(0,0,0),
+                                        overlay=True,
+                                    )
                     # --- Build body from stored translation using original PDF line styles ---
                     heading_style = ParagraphStyle("H", fontName="DejaVu-Bold", fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=TA_LEFT)
                     subhead_style = ParagraphStyle("SH", fontName="DejaVu-Bold", fontSize=11, spaceBefore=8, spaceAfter=2, leading=14, alignment=TA_LEFT)
