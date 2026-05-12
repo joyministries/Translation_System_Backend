@@ -281,8 +281,8 @@ def download_translation(
                     source_code = src_lang.libretranslate_code or src_lang.code if src_lang else "en"
 
                     try:
-                        pdfmetrics.registerFont(TTFont("DejaVu", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
-                        pdfmetrics.registerFont(TTFont("DejaVu-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+                        pdfmetrics.registerFont(TTFont("DejaVu", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"))
+                        pdfmetrics.registerFont(TTFont("DejaVu-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"))
                     except Exception:
                         pass
 
@@ -294,8 +294,21 @@ def download_translation(
                         _re.IGNORECASE,
                     )
 
-                    def _find_chapter_1_page_index():
+                    introduction_pattern = _re.compile(
+                        r'^(INTRODUCTION|NHANGANYAYA|INTRODUCCI[ÓO]N|UTANGULIZI|INTRODUÇÃO|EINFÜHRUNG)\b',
+                        _re.IGNORECASE,
+                    )
+
+                    def _find_body_start_page_index():
                         start_idx = max((book.first_content_page or 5) - 1, 0)
+                        for idx in range(start_idx, len(orig_doc)):
+                            page_text = orig_doc[idx].get_text("text", sort=True)
+                            for raw_line in page_text.splitlines():
+                                line = raw_line.strip()
+                                if not line:
+                                    continue
+                                if introduction_pattern.match(line) and "....." not in line:
+                                    return idx
                         for idx in range(start_idx, len(orig_doc)):
                             page_text = orig_doc[idx].get_text("text", sort=True)
                             for raw_line in page_text.splitlines():
@@ -316,7 +329,17 @@ def download_translation(
                             or "CERTIFICATE IN MINISTRY" in upper
                         )
 
-                    body_start_page_idx = _find_chapter_1_page_index()
+                    def _normalize_render_quotes(text: str) -> str:
+                        if not text:
+                            return text
+                        return (
+                            text.replace("<<", '"')
+                            .replace(">>", '"')
+                            .replace("«", '"')
+                            .replace("»", '"')
+                        )
+
+                    body_start_page_idx = _find_body_start_page_index()
                     front_matter_end_idx = max(0, min(body_start_page_idx - 1, last_page - 1))
 
                     def _extract_text_blocks(page, split_paragraphs: bool = False, aggressive_merge: bool = True):
@@ -513,7 +536,10 @@ def download_translation(
                                     if pos < len(trans_toc_lines):
                                         stored_lookup[blk_idx] = trans_toc_lines[pos]
 
-                            translated = _batch_translate([t for _, t, _ in text_blocks], source_code, target_code)
+                            translated = [
+                                _normalize_render_quotes(t)
+                                for t in _batch_translate([t for _, t, _ in text_blocks], source_code, target_code)
+                            ]
                             # Override TOC lines with stored translation
                             translated = [stored_lookup.get(i, trans) for i, trans in enumerate(translated)]
                             if page_num == 3 or _is_flowchart_page(page):
@@ -826,6 +852,18 @@ def download_translation(
                                             ]
                                         ):
                                             continue
+                                        elif (
+                                            page_num == 6
+                                            and len(orig_text.strip()) <= 32
+                                            and (
+                                                "2nd century" in orig_text.lower()
+                                                or "century ad" in orig_text.lower()
+                                                or _re.fullmatch(r"2\s*nd\.?", orig_text.strip(), _re.IGNORECASE)
+                                                or _re.fullmatch(r"2", orig_text.strip())
+                                            )
+                                        ):
+                                            # Redraw this century note once as a controlled overlay below.
+                                            continue
                                         if bullet_items:
                                             for fs in [fs_use, fs_use-2, 7]:
                                                 item_y = y_start
@@ -1011,6 +1049,43 @@ def download_translation(
                             return True
                         return False
 
+                    def _starts_new_body_block(text):
+                        value = (text or "").strip()
+                        if not value:
+                            return False
+                        if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', value, _re.IGNORECASE):
+                            return True
+                        if value.startswith("• "):
+                            return True
+                        if _re.match(r'^\d+\. ', value):
+                            return True
+                        if _re.match(r'^[a-zA-Z]\) ', value):
+                            return True
+                        if _re.match(r'^\([ivxabc]+\)', value, _re.IGNORECASE):
+                            return True
+                        return False
+
+                    def _is_parenthetical_tail(text):
+                        value = (text or "").strip()
+                        return len(value) <= 24 and bool(_re.fullmatch(r'\([^)]+\)', value))
+
+                    def _should_join_with_previous(prev_text, current_text):
+                        prev = (prev_text or "").strip()
+                        curr = (current_text or "").strip()
+                        if not prev or not curr:
+                            return False
+                        if _is_parenthetical_tail(curr):
+                            return True
+                        if _starts_new_body_block(curr):
+                            return False
+                        if prev.endswith((" -", " –", "“", "\"", "(", "/", ":", ";")):
+                            return True
+                        if not _re.search(r'[.!?]"?$|[.!?]”$|[.!?]\'$', prev):
+                            return True
+                        if curr[:1].islower():
+                            return True
+                        return False
+
                     # Pre-process: join continuation lines (scripture refs split across lines)
                     raw_lines = translation.translated_text.split("\n")
                     source_records = _source_line_records()
@@ -1029,31 +1104,122 @@ def download_translation(
                         # Continuation: starts with verse ref like "44:8" or "10:14" or "13:20"
                         if translated_records and p and _re.match(r'^\d+:\d+', p):
                             translated_records[-1]["text"] = translated_records[-1]["text"].rstrip() + " " + p
+                        elif translated_records and p and _should_join_with_previous(translated_records[-1]["text"], p):
+                            translated_records[-1]["text"] = translated_records[-1]["text"].rstrip() + " " + p
+                        elif p.startswith("• "):
+                            bullet_split = _re.match(r'^(•\s*["“].+?["”])\s+(.+)$', p)
+                            if bullet_split:
+                                translated_records.append({
+                                    "text": bullet_split.group(1),
+                                    "source": source_record,
+                                })
+                                translated_records.append({
+                                    "text": bullet_split.group(2),
+                                    "source": source_record,
+                                })
+                            else:
+                                translated_records.append({
+                                    "text": line,
+                                    "source": source_record,
+                                })
                         else:
                             translated_records.append({
                                 "text": line,
                                 "source": source_record,
                             })
 
+                    def _chapter_heading_number(value):
+                        match = _re.match(
+                            r'^(?:CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*(\d+)',
+                            (value or "").strip(),
+                            _re.IGNORECASE,
+                        )
+                        return int(match.group(1)) if match else None
+
+                    def _is_numbered_subhead_line(text, source_record):
+                        content = _re.sub(r'^\d+\.\s*', '', (text or '')).strip()
+                        if not content:
+                            return False
+                        source_bold = bool(source_record and source_record["bold"])
+                        source_size = float(source_record["size"] if source_record else 11)
+                        words = _re.findall(r'\b[\wÀ-ÿ-]+\b', content)
+                        word_count = len(words)
+                        ends_sentence = bool(_re.search(r'[.!?:"”]$', content))
+                        contains_connector = bool(_re.search(r'\b(and|or|but|with|without|because|that|which|kuti|uye|kana|nekuti|pour|avec|sans|que|qui|kwete)\b', content, _re.IGNORECASE))
+                        title_caseish = all(
+                            w[:1].isupper() or w.isupper()
+                            for w in words
+                            if len(w) > 2
+                        ) if words else False
+                        if source_bold and source_size >= 12 and word_count <= 10 and not ends_sentence:
+                            return True
+                        if word_count <= 6 and not ends_sentence and not contains_connector:
+                            return True
+                        if word_count <= 8 and title_caseish and not contains_connector and not ends_sentence:
+                            return True
+                        return False
+
+                    chapter_heading_lookup = {}
+                    for line in raw_lines:
+                        candidate = (line or "").strip()
+                        if not candidate:
+                            continue
+                        m = _re.match(
+                            r'^((?:CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+\s*[-–]\s*)(.+)$',
+                            candidate,
+                            _re.IGNORECASE,
+                        )
+                        if not m:
+                            continue
+                        suffix = _re.sub(r'\s+', ' ', m.group(2)).strip().upper()
+                        chapter_heading_lookup[suffix] = candidate
+
+                    def _is_body_start_heading(value):
+                        candidate = (value or "").strip()
+                        if not candidate:
+                            return False
+                        if introduction_pattern.match(candidate) and "....." not in candidate:
+                            return True
+                        if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*1\b', candidate, _re.IGNORECASE) and "....." not in candidate:
+                            return True
+                        return False
+
+                    def _is_intro_title_line(value, source_record):
+                        candidate = (value or "").strip()
+                        if not candidate:
+                            return False
+                        if _starts_new_body_block(candidate):
+                            return False
+                        if len(candidate) > 70:
+                            return False
+                        if bool(_re.search(r'[.!?:"”]$', candidate)):
+                            return False
+                        source_bold = bool(source_record and source_record["bold"])
+                        source_size = float(source_record["size"] if source_record else 11)
+                        word_count = len(_re.findall(r'\b[\wÀ-ÿ-]+\b', candidate))
+                        return source_bold or source_size >= 12 or word_count <= 5
+
                     story = []
                     skip_toc = False
-                    reached_chapter_1 = False
+                    reached_body_start = False
+                    last_emitted_chapter_num = 0
+                    previous_body_heading = None
                     for record in translated_records:
                         p = record["text"].strip()
                         source_record = record["source"]
                         # Skip TOC section
-                        if not reached_chapter_1 and p and ("TABLE OF CONTENTS" in p.upper() or "YALIYOMO" in p.upper() or "ZVIRI MUKATI" in p.upper() or "TABLE DES" in p.upper() or "ÍNDICE" in p.upper() or "JEDWALI" in p.upper() or "ATỌKA" in p.upper()):
+                        if not reached_body_start and p and ("TABLE OF CONTENTS" in p.upper() or "YALIYOMO" in p.upper() or "ZVIRI MUKATI" in p.upper() or "TABLE DES" in p.upper() or "ÍNDICE" in p.upper() or "JEDWALI" in p.upper() or "ATỌKA" in p.upper()):
                             skip_toc = True
                             continue
                         if skip_toc:
-                            if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', p, _re.IGNORECASE) and "....." not in p:
+                            if _is_body_start_heading(p):
                                 skip_toc = False
-                                reached_chapter_1 = True
+                                reached_body_start = True
                             else:
                                 continue
-                        if not reached_chapter_1:
-                            if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', p, _re.IGNORECASE) and "....." not in p:
-                                reached_chapter_1 = True
+                        if not reached_body_start:
+                            if _is_body_start_heading(p):
+                                reached_body_start = True
                             else:
                                 continue
                         if source_record and _skip_body_record(source_record):
@@ -1061,6 +1227,23 @@ def download_translation(
                         if not p:
                             story.append(Spacer(1, 0.05*inch))
                             continue
+                        if p.startswith("• "):
+                            bullet_rest = p[2:].strip()
+                            inline_bullet_split = _re.match(r'^(["“].+?["”])\s+(.+)$', bullet_rest)
+                            if inline_bullet_split:
+                                bullet_only = "• " + inline_bullet_split.group(1).strip()
+                                bullet_safe = _normalize_render_quotes(bullet_only).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+                                tail_safe = _normalize_render_quotes(inline_bullet_split.group(2).strip()).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+                                story.append(Paragraph(bullet_safe, indent_style))
+                                story.append(Paragraph(tail_safe, body_style))
+                                continue
+                        normalized_upper = _re.sub(r'\s+', ' ', p).strip().upper()
+                        promoted_heading = chapter_heading_lookup.get(normalized_upper)
+                        if promoted_heading and not _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', p, _re.IGNORECASE):
+                            promoted_num = _chapter_heading_number(promoted_heading)
+                            if promoted_num and promoted_num > last_emitted_chapter_num:
+                                p = promoted_heading
+                        p = _normalize_render_quotes(p)
                         safe = p.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                         is_source_bold = bool(source_record and source_record["bold"])
                         source_size = float(source_record["size"] if source_record else 11)
@@ -1079,22 +1262,48 @@ def download_translation(
                             and len(p) <= 90
                             and not looks_like_sentence
                         )
-                        if is_chapter:
+                        is_intro_heading = bool(introduction_pattern.match(p)) and "....." not in p
+                        if is_chapter or is_intro_heading:
+                            chapter_num = _chapter_heading_number(p)
+                            if chapter_num and chapter_num <= last_emitted_chapter_num:
+                                continue
+                            if chapter_num:
+                                last_emitted_chapter_num = chapter_num
                             story.append(Spacer(1, 0.15*inch))
                             story.append(Paragraph(safe, heading_style))
                             story.append(Spacer(1, 0.08*inch))
+                            previous_body_heading = "intro" if is_intro_heading else "chapter"
+                        elif previous_body_heading == "intro" and _is_intro_title_line(p, source_record):
+                            story.append(Spacer(1, 0.05*inch))
+                            story.append(Paragraph(safe, subhead_style))
+                            previous_body_heading = None
+                        elif (
+                            normalized_upper in chapter_heading_lookup
+                            and chapter_heading_lookup[normalized_upper]
+                            and _chapter_heading_number(chapter_heading_lookup[normalized_upper]) == last_emitted_chapter_num
+                        ):
+                            # Keep summary/title echoes as subheads instead of re-promoting
+                            # them into chapter headings after the real chapter title has
+                            # already been emitted.
+                            story.append(Spacer(1, 0.05*inch))
+                            story.append(Paragraph(safe, subhead_style))
+                            previous_body_heading = None
                         elif is_allcaps or is_lettered or safe_source_bold:
                             story.append(Spacer(1, 0.05*inch))
                             story.append(Paragraph(safe, subhead_style))
+                            previous_body_heading = None
                         elif _re.match(r'^\d+\. ', p):
-                            content = _re.sub(r'^\d+\.\s*', '', p)
-                            has_caps = bool(_re.search(r'[A-Z]{3,}', content))
-                            is_title = len(content) <= 50 and not _re.search(r'\b(is|are|was|has|have)\b', content, _re.IGNORECASE)
-                            story.append(Paragraph(safe, subhead_style if (is_title or has_caps) else body_style))
+                            story.append(Paragraph(safe, subhead_style if _is_numbered_subhead_line(p, source_record) else body_style))
+                            previous_body_heading = None
+                        elif p.startswith("• "):
+                            story.append(Paragraph(safe, indent_style))
+                            previous_body_heading = None
                         elif _re.match(r'^\([ivxabc]+\)', p):
                             story.append(Paragraph(safe, indent_style))
+                            previous_body_heading = None
                         else:
                             story.append(Paragraph(safe, body_style))
+                            previous_body_heading = None
                     try:
                         body_doc_rl.build(story)
                         body_bytes = body_buf.getvalue()
