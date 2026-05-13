@@ -329,6 +329,28 @@ def download_translation(
                             or "CERTIFICATE IN MINISTRY" in upper
                         )
 
+                    def _is_toc_page(page, text_blocks=None):
+                        page_text = page.get_text("text", sort=True)
+                        upper = page_text.upper()
+                        if any(
+                            marker in upper
+                            for marker in (
+                                "TABLE OF CONTENTS",
+                                "INHOUDSOPGAWE",
+                                "INHOUDS",
+                                "YALIYOMO",
+                                "ZVIRI MUKATI",
+                                "TABLE DES",
+                                "ÍNDICE",
+                                "JEDWALI",
+                                "ATỌKA",
+                            )
+                        ):
+                            return True
+                        blocks = text_blocks or _extract_text_blocks(page)
+                        dotted_count = sum(1 for _, text, _ in blocks if "....." in text or "….." in text)
+                        return dotted_count >= 3
+
                     def _normalize_render_quotes(text: str) -> str:
                         if not text:
                             return text
@@ -481,6 +503,148 @@ def download_translation(
 
                         return extracted_blocks
 
+                    standard_flowchart_base_pdf = "/app/storage/d65bcd2e-e73a-4ad5-a3f1-6d3436fe9b6a.pdf"
+
+                    def _insert_fitted_textbox(page, rect, text, *, bold=False, align=0, sizes=(12, 11, 10, 9, 8)):
+                        content = (text or "").strip()
+                        if not content:
+                            return False
+                        fontname = "dejvb" if bold else "dejv"
+                        fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+                        for fs in sizes:
+                            result = page.insert_textbox(
+                                _fitz.Rect(rect),
+                                _normalize_render_quotes(content),
+                                fontsize=fs,
+                                fontname=fontname,
+                                fontfile=fontfile,
+                                color=(0, 0, 0),
+                                align=align,
+                                overlay=True,
+                            )
+                            if result >= -2:
+                                return True
+                        return False
+
+                    def _render_standard_flowchart_page(page):
+                        heading_src = "Examination"
+                        paragraph_src = (
+                            "In order to receive the desired credits for this course, students must complete "
+                            "the examination. This has been included in the back of this manual. The examination "
+                            "is open book and students may refer to their manual when completing their work. "
+                            "Once completed, students are requested to email work for grading in either WORD or "
+                            "PDF format to info@tiuniversity.com or take the online examination."
+                        )
+                        warning_src = "PLEASE ENSURE THAT THE COURSE CODE AND STUDENT NUMBER IS INCLUDED."
+
+                        chart_title_src = "The following Flow Chart shows how the credit hours are applied in all of our programs."
+                        chart_box_titles = [
+                            "Certificate in Ministry",
+                            "Diploma in Ministry",
+                            "Bachelor Degrees",
+                            "Bachelor Degree Honors",
+                            "Master's Degree",
+                            "Doctor of Ministry Degree",
+                            "Doctor of Philosophy",
+                        ]
+                        chart_box_values = [
+                            "30 Credit Hours",
+                            "30 Credit Hours",
+                            "60 Credit Hours",
+                            "18 Credit Hours",
+                            "18 Credit Hours",
+                            "36 Credit Hours",
+                            "36 Credit Hours",
+                        ]
+                        chart_right_labels = [
+                            "30 Credit Hours",
+                            "=60 Credit Hours",
+                            "=120 Credit Hours",
+                            "=136 Credit Hours",
+                            "=156 Credit Hours",
+                            "=192 Credit Hours",
+                            "=228 Credit Hours",
+                        ]
+
+                        source_strings = [
+                            heading_src,
+                            paragraph_src,
+                            warning_src,
+                            chart_title_src,
+                            *chart_box_titles,
+                            *chart_box_values,
+                            *chart_right_labels,
+                        ]
+                        translated_strings = _batch_translate(source_strings, source_code, target_code)
+                        heading_tr = translated_strings[0]
+                        paragraph_tr = translated_strings[1]
+                        warning_tr = translated_strings[2]
+                        chart_title_tr = translated_strings[3]
+                        title_trs = translated_strings[4:11]
+                        value_trs = translated_strings[11:18]
+                        right_trs = translated_strings[18:25]
+
+                        page.draw_rect(page.rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+                        if _os.path.exists(standard_flowchart_base_pdf):
+                            base_doc = _fitz.open(standard_flowchart_base_pdf)
+                            page.show_pdf_page(page.rect, base_doc, 3, overlay=True)
+                            base_doc.close()
+
+                        heading_rect = _fitz.Rect(55, 72, 540, 104)
+                        paragraph_rect = _fitz.Rect(55, 110, 548, 188)
+                        warning_rect = _fitz.Rect(55, 190, 548, 228)
+                        chart_title_rect = _fitz.Rect(150, 238, 455, 278)
+                        box_title_rects = [
+                            _fitz.Rect(205, 286, 360, 306),
+                            _fitz.Rect(205, 347, 360, 367),
+                            _fitz.Rect(205, 409, 360, 429),
+                            _fitz.Rect(205, 471, 360, 491),
+                            _fitz.Rect(205, 533, 360, 553),
+                            _fitz.Rect(205, 595, 360, 615),
+                            _fitz.Rect(205, 657, 360, 677),
+                        ]
+                        box_value_rects = [
+                            _fitz.Rect(228, 306, 375, 327),
+                            _fitz.Rect(228, 368, 375, 389),
+                            _fitz.Rect(228, 429, 375, 450),
+                            _fitz.Rect(228, 492, 375, 513),
+                            _fitz.Rect(228, 554, 375, 575),
+                            _fitz.Rect(228, 616, 375, 637),
+                            _fitz.Rect(228, 678, 375, 699),
+                        ]
+                        right_label_rects = [
+                            _fitz.Rect(382, 313, 545, 331),
+                            _fitz.Rect(382, 374, 545, 392),
+                            _fitz.Rect(382, 436, 545, 454),
+                            _fitz.Rect(382, 498, 545, 516),
+                            _fitz.Rect(382, 560, 545, 578),
+                            _fitz.Rect(382, 622, 545, 640),
+                            _fitz.Rect(382, 684, 545, 702),
+                        ]
+
+                        clear_rects = [
+                            heading_rect,
+                            paragraph_rect,
+                            warning_rect,
+                            chart_title_rect,
+                            *box_title_rects,
+                            *box_value_rects,
+                            *right_label_rects,
+                        ]
+                        for rect in clear_rects:
+                            page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+
+                        _insert_fitted_textbox(page, heading_rect, heading_tr, bold=True, align=0, sizes=(15, 14, 13))
+                        _insert_fitted_textbox(page, paragraph_rect, paragraph_tr, bold=False, align=0, sizes=(12, 11, 10, 9))
+                        _insert_fitted_textbox(page, warning_rect, warning_tr, bold=True, align=0, sizes=(13, 12, 11, 10, 9))
+                        _insert_fitted_textbox(page, chart_title_rect, chart_title_tr, bold=False, align=1, sizes=(11, 10, 9))
+                        for rect, text in zip(box_title_rects, title_trs):
+                            _insert_fitted_textbox(page, rect, text, bold=False, align=1, sizes=(11, 10, 9, 8))
+                        for rect, text in zip(box_value_rects, value_trs):
+                            _insert_fitted_textbox(page, rect, text, bold=False, align=1, sizes=(10, 9, 8, 7))
+                        for rect, text in zip(right_label_rects, right_trs):
+                            _insert_fitted_textbox(page, rect, text, bold=False, align=0, sizes=(10, 9, 8, 7))
+
                     # --- Translate front matter in-place using overlay method ---
                     for page_num in range(front_matter_end_idx + 1):
                         page = orig_doc[page_num]
@@ -525,10 +689,29 @@ def download_translation(
                             split_paragraphs=split_front_matter_paragraphs,
                             aggressive_merge=(page_num == 4),
                         )
+                        is_toc_page = _is_toc_page(page, text_blocks)
+                        if is_toc_page and text_blocks:
+                            def _is_toc_block(text):
+                                value = (text or "").strip()
+                                upper = value.upper()
+                                return (
+                                    "....." in value
+                                    or "….." in value
+                                    or "TABLE OF CONTENTS" in upper
+                                    or "INHOUD" in upper
+                                    or "YALIYOMO" in upper
+                                    or "ZVIRI MUKATI" in upper
+                                    or "TABLE DES" in upper
+                                    or "ÍNDICE" in upper
+                                    or "JEDWALI" in upper
+                                    or "ATỌKA" in upper
+                                )
+
+                            text_blocks = [tb for tb in text_blocks if _is_toc_block(tb[1])]
                         if text_blocks:
                             # For TOC page: use stored translation lines by position
                             stored_lookup = {}
-                            if page_num == 5 and translation.translated_text:
+                            if is_toc_page and translation.translated_text:
                                 trans_toc_lines = [l.strip() for l in translation.translated_text.split("\n")
                                                    if l.strip() and ("....." in l or "….." in l)]
                                 orig_toc_blocks = [(i, orig) for i, (_, orig, _b) in enumerate(text_blocks) if "....." in orig or "….." in orig]
@@ -543,247 +726,66 @@ def download_translation(
                             # Override TOC lines with stored translation
                             translated = [stored_lookup.get(i, trans) for i, trans in enumerate(translated)]
                             if page_num == 3 or _is_flowchart_page(page):
-                                # Flowchart/examination page: collect ALL redactions (text + OCR image) then apply once
-                                all_inserts = []  # (type, args)
-
-                                # Text blocks
-                                for (bbox, orig_text, _b), trans in zip(text_blocks, translated):
-                                    page.add_redact_annot(_fitz.Rect(bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2), fill=(1,1,1))
-                                    rect = _fitz.Rect(bbox)
-                                    all_inserts.append(("text", rect, trans, orig_text))
-
-                                # OCR image blocks
-                                for b in page.get_text("dict")["blocks"]:
-                                    if b.get("type") != 1: continue
-                                    img_bbox = _fitz.Rect(b["bbox"])
-                                    pix = page.get_pixmap(matrix=_fitz.Matrix(2,2), clip=img_bbox)
-                                    img = _PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                                    ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-                                    n = len(ocr_data["text"])
-                                    scale_x = img_bbox.width / pix.width
-                                    scale_y = img_bbox.height / pix.height
-                                    ocr_lines = {}
-                                    for i in range(n):
-                                        word = ocr_data["text"][i].strip()
-                                        try:
-                                            conf = float(ocr_data["conf"][i])
-                                        except (TypeError, ValueError):
-                                            conf = -1
-                                        if not word or conf < 20:
-                                            continue
-                                        key = (ocr_data["block_num"][i], ocr_data["par_num"][i], ocr_data["line_num"][i])
-                                        if key not in ocr_lines:
-                                            ocr_lines[key] = {"words": [], "x": ocr_data["left"][i], "y": ocr_data["top"][i], "h": ocr_data["height"][i]}
-                                        ocr_lines[key]["words"].append(word)
-                                    if ocr_lines:
-                                        line_keys = list(ocr_lines.keys())
-                                        ocr_texts = [" ".join(ocr_lines[k]["words"]) for k in line_keys]
-                                        ocr_translated = _batch_translate(ocr_texts, source_code, target_code)
-                                        for k, t in zip(line_keys, ocr_translated):
-                                            x0 = img_bbox.x0 + ocr_lines[k]["x"]*scale_x
-                                            y0 = img_bbox.y0 + ocr_lines[k]["y"]*scale_y
-                                            fs = max(ocr_lines[k]["h"]*scale_y*0.85, 8)
-                                            page.add_redact_annot(_fitz.Rect(x0, y0, img_bbox.x1, y0 + fs*1.3), fill=(1,1,1))
-                                            all_inserts.append(("ocr", x0, y0, fs, t))
-
-                                # Single apply_redactions call
-                                page.apply_redactions()
-
-                                # Now insert all translated text
-                                def _is_flowchart_label(orig_text, rect):
-                                    text = (orig_text or "").strip()
-                                    upper = text.upper()
-                                    if not text:
-                                        return False
-                                    if rect.y0 < page.rect.height * 0.42:
-                                        return False
-                                    if len(text) <= 40:
-                                        return True
-                                    chart_markers = [
-                                        "CERTIFICATE",
-                                        "DIPLOMA",
-                                        "BACHELOR",
-                                        "MASTERS",
-                                        "DOCTOR",
-                                        "MINISTRY",
-                                        "PHILOSOPHY",
-                                        "CREDIT HOURS",
-                                        "CREDITS",
-                                        "CREDIT",
-                                        "HOURS",
-                                    ]
-                                    if any(marker in upper for marker in chart_markers):
-                                        return True
-                                    if _re3.search(r"\b\d+\s+(CREDIT|CREDITS|HOURS)\b", upper):
-                                        return True
-                                    if _re3.fullmatch(r"[=0-9A-Z\s]+", upper) and len(text) <= 60:
-                                        return True
-                                    return False
-
-                                def _insert_chart_label(rect, trans):
-                                    trans_clean = (trans or "").strip()
-                                    is_credit_value = bool(
-                                        _re3.match(
-                                            r"^(?:=\s*)?\d+\s+.+",
-                                            trans_clean,
-                                            _re3.IGNORECASE,
+                                _render_standard_flowchart_page(page)
+                                continue
+                            elif is_toc_page:
+                                toc_title = next(
+                                    (
+                                        line.strip()
+                                        for line in translation.translated_text.split("\n")
+                                        if line.strip()
+                                        and any(
+                                            marker in line.strip().upper()
+                                            for marker in (
+                                                "TABLE OF CONTENTS",
+                                                "INHOUDSOPGAWE",
+                                                "INHOUDS",
+                                                "YALIYOMO",
+                                                "ZVIRI MUKATI",
+                                                "TABLE DES",
+                                                "ÍNDICE",
+                                                "JEDWALI",
+                                                "ATỌKA",
+                                            )
                                         )
-                                    )
-                                    is_short_value = len(trans_clean) <= 28
-                                    if is_credit_value or is_short_value:
-                                        rect = _fitz.Rect(rect.x0, rect.y0 - 1, rect.x1, rect.y1 + 4)
-                                        align = 1
-                                    else:
-                                        rect = _fitz.Rect(rect.x0 - 2, rect.y0 - 1, rect.x1 + 8, rect.y1 + 6)
-                                        align = 0
-                                    for fs in [10, 9, 8, 7]:
-                                        result = page.insert_textbox(
-                                            rect,
-                                            trans_clean,
-                                            fontsize=fs,
-                                            fontname="dejv",
-                                            fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                                            color=(0, 0, 0),
-                                            align=align,
-                                        )
-                                        if result >= -2:
-                                            return True
-                                    return False
-
-                                all_inserts.sort(
-                                    key=lambda item: item[1].y0 if item[0] == "text" else item[2]
+                                    ),
+                                    translated[0] if translated else "Table of Contents",
                                 )
-                                p3_y_cursor = None
-                                chart_value_rects = []
-                                chart_title_rects = []
-                                for item in all_inserts:
-                                    if item[0] == "text":
-                                        _, rect, trans, orig_text = item
-                                        if not trans.strip(): continue
-                                        import re as _re3
-                                        if rect.y0 > 230 and rect.x0 > 220 and rect.x1 < 360:
-                                            txt = trans.strip()
-                                            if _re3.match(r"^\d+\s+\S+", txt):
-                                                chart_value_rects.append((rect, txt))
-                                            elif len(txt) <= 40 and not _re3.match(r"^[=0-9]", txt):
-                                                chart_title_rects.append((rect, txt))
-                                        if _is_flowchart_label(orig_text, rect):
-                                            _insert_chart_label(rect, trans)
-                                            continue
-                                        y_start = p3_y_cursor if p3_y_cursor is not None else rect.y0
-                                        y_start = max(y_start, rect.y0)
-                                        # Keep the page-4 warning sentence as one caps line.
-                                        source_has_warning = "PLEASE ENSURE" in orig_text.upper()
-                                        caps_match = _re3.search(r'\b[A-Z]{3,}(?:\s+[A-Z]{2,})+\.', trans)
-                                        if source_has_warning:
-                                            sentence_parts = [p.strip() for p in _re3.split(r'(?<=[.!?])\s+', trans.strip()) if p.strip()]
-                                            if len(sentence_parts) >= 2:
-                                                before = " ".join(sentence_parts[:-1]).strip()
-                                                warning = sentence_parts[-1].strip()
-                                                parts = [p for p in [before, warning] if p]
-                                            elif caps_match:
-                                                before = trans[:caps_match.start()].strip()
-                                                warning = caps_match.group(0).strip()
-                                                parts = [p for p in [before, warning] if p]
-                                            else:
-                                                parts = [trans]
-                                        elif caps_match:
-                                            before = trans[:caps_match.start()].strip()
-                                            warning = caps_match.group(0).strip()
-                                            parts = [p for p in [before, warning] if p]
-                                        else:
-                                            parts = [trans]
-                                        for part in parts:
-                                            part = part.strip()
-                                            if not part: continue
-                                            is_caps_line = (part == part.upper() and len(part) > 10) or (source_has_warning and part == parts[-1])
-                                            fn = "dejvb" if is_caps_line else "dejv"
-                                            ff = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if is_caps_line else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-                                            expanded = _fitz.Rect(rect.x0, y_start, page.rect.x1 - 57, page.rect.y1 - 20)
-                                            if y_start >= page.rect.y1 - 25 or not expanded.is_valid: break
-                                            for fs in [10, 9, 8, 7]:
-                                                result = page.insert_textbox(expanded, part, fontsize=fs, fontname=fn, fontfile=ff, color=(0,0,0))
-                                                if result >= 0:
-                                                    tw = _fitz.get_text_length(part, fontname="helv", fontsize=fs)
-                                                    n_lines = max(1, -(-int(tw) // max(int(expanded.width), 1)))
-                                                    y_start += n_lines * fs * 1.3 + fs * 0.5
-                                                    break
-                                            else:
-                                                y_start += 15
-                                        p3_y_cursor = y_start
-                                    else:
-                                        _, x0, y0, fs, t = item
-                                        page.insert_text(_fitz.Point(x0, y0+fs), t, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
-
-                                chart_value_rects.sort(key=lambda item: item[0].y0)
-                                chart_title_rects.sort(key=lambda item: item[0].y0)
-                                if len(chart_value_rects) >= 7 and len(chart_title_rects) >= 7:
-                                    cumulative_labels = [
-                                        "30 Credit Hours",
-                                        "= 60 Credit Hours",
-                                        "120 Credit Hours",
-                                        "136 Credit Hours",
-                                        "= 156 Credit Hours",
-                                        "= 192 Credit Hours",
-                                        "= 228 Credit Hours",
-                                    ]
-                                    translated_labels = _batch_translate(cumulative_labels, source_code, target_code)
-                                    connector_positions = []
-                                    for idx, (value_rect, _txt) in enumerate(chart_value_rects[:7]):
-                                        if idx + 1 < len(chart_title_rects):
-                                            next_title_rect = chart_title_rects[idx + 1][0]
-                                            y_mid = (value_rect.y1 + next_title_rect.y0) / 2
-                                        else:
-                                            y_mid = value_rect.y1 + 18
-                                        connector_positions.append(y_mid)
-
-                                    for idx, (y_mid, label) in enumerate(zip(connector_positions, translated_labels)):
-                                        if idx == 0:
-                                            # The first right-side connector survives as a baked graphic strip.
-                                            # Wipe a wider fixed band and redraw the translated label explicitly.
-                                            clear_rect = _fitz.Rect(392, 270, 520, 291)
-                                            text_point = _fitz.Point(398, 284)
-                                        else:
-                                            clear_rect = _fitz.Rect(320, y_mid - 13, 505, y_mid + 13)
-                                            text_point = _fitz.Point(338, y_mid + 3)
-                                        page.draw_rect(
-                                            clear_rect,
-                                            color=(1, 1, 1),
-                                            fill=(1, 1, 1),
-                                            overlay=True,
-                                        )
-                                        page.insert_text(
-                                            text_point,
-                                            label,
-                                            fontsize=9,
-                                            fontname="dejv",
-                                            fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                                            color=(0, 0, 0),
-                                            overlay=True,
-                                        )
-
-                                # Force-replace the first right-side connector label even if
-                                # chart row detection misses it. This is the stubborn strip that
-                                # survives as a graphic on page 4 in some cached builds.
-                                first_connector_label = _batch_translate(
-                                    ["30 Credit Hours"], source_code, target_code
-                                )[0]
-                                first_connector_rect = _fitz.Rect(374, 269, 520, 292)
-                                page.draw_rect(
-                                    first_connector_rect,
-                                    color=(1, 1, 1),
-                                    fill=(1, 1, 1),
-                                    overlay=True,
+                                toc_lines = [
+                                    l.strip()
+                                    for l in translation.translated_text.split("\n")
+                                    if l.strip() and ("....." in l or "….." in l)
+                                ]
+                                content_rect = _fitz.Rect(40, 70, page.rect.x1 - 40, page.rect.y1 - 55)
+                                page.draw_rect(content_rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+                                _insert_fitted_textbox(
+                                    page,
+                                    _fitz.Rect(60, 95, page.rect.x1 - 60, 125),
+                                    toc_title,
+                                    bold=True,
+                                    align=1,
+                                    sizes=(16, 15, 14, 13),
                                 )
-                                page.insert_text(
-                                    _fitz.Point(366, 284),
-                                    first_connector_label,
-                                    fontsize=9,
-                                    fontname="dejv",
-                                    fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                                    color=(0, 0, 0),
-                                    overlay=True,
-                                )
+                                y = 150
+                                import re as _re2
+                                for line in toc_lines:
+                                    m = _re2.search(r'(\d+)\s*$', line.rstrip('.').strip())
+                                    pagenum = m.group(1) if m else ""
+                                    title = _re2.sub(r'\.{2,}.*', '', line).strip()
+                                    title = _re2.sub(r'\s*\d+\s*$', '', title).strip()
+                                    fs = 10
+                                    title_w = _fitz.get_text_length(title, fontname="helv", fontsize=fs)
+                                    num_w = _fitz.get_text_length(pagenum, fontname="helv", fontsize=fs) if pagenum else 0
+                                    left_x, right_x = 70, page.rect.x1 - 70
+                                    dot_w = _fitz.get_text_length(".", fontname="helv", fontsize=fs)
+                                    gap = max(20, (right_x - left_x) - title_w - num_w)
+                                    dots = "." * max(3, int(gap / max(dot_w, 1)))
+                                    page.insert_text(_fitz.Point(left_x, y), title, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0), overlay=True)
+                                    page.insert_text(_fitz.Point(left_x + title_w, y), dots, fontsize=fs, fontname="helv", color=(0,0,0), overlay=True)
+                                    if pagenum:
+                                        page.insert_text(_fitz.Point(right_x - num_w, y), pagenum, fontsize=fs, fontname="helv", color=(0,0,0), overlay=True)
+                                    y += 22
+                                continue
                             else:
                                 for (bbox, _, _b), trans in zip(text_blocks, translated):
                                     page.add_redact_annot(_fitz.Rect(bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2), fill=(1,1,1))
@@ -793,7 +795,7 @@ def download_translation(
                                 for (bbox, orig_text, is_bold), trans in zip(text_blocks, translated):
                                     rect = _fitz.Rect(bbox)
                                     # TOC page (index 5): expand dotted lines to full page width
-                                    if page_num == 5 and ("....." in orig_text or "….." in orig_text):
+                                    if is_toc_page and ("....." in orig_text or "….." in orig_text):
                                         import re as _re2
                                         m = _re2.search(r'(\d+)\s*$', trans.rstrip('.').strip())
                                         pagenum = m.group(1) if m else ""
@@ -924,7 +926,17 @@ def download_translation(
                                                     y_cursor[bbox_key] = y_start + n_lines * fs * 1.35 + gap_after
                                                     break
 
-                                if page_num == 4:
+                                page_upper = page.get_text("text", sort=True).upper()
+                                is_publishing_page = any(
+                                    marker in page_upper
+                                    for marker in (
+                                        "PUBLISHED IN SOUTH AFRICA",
+                                        "JOY MINISTRIES",
+                                        "COPY OF THIS BOOK",
+                                        "ALL RIGHTS RESERVED",
+                                    )
+                                )
+                                if page_num == 4 and is_publishing_page and not is_toc_page:
                                     address_lines = [
                                         "Publié en Afrique du Sud par JOY MINISTRIES",
                                         "Boîte postale 15611, Lambton, Germiston",
