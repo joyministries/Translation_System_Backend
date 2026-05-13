@@ -175,6 +175,7 @@ def get_translation(
     db: Session = Depends(get_db),
 ):
     import uuid
+    import logging as _logging
 
     try:
         trans_uuid = uuid.UUID(translation_id)
@@ -262,7 +263,7 @@ def download_translation(
                         content = f.read()
                 elif translation.translated_text:
                     from reportlab.lib.pagesizes import A4
-                    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+                    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
                     from reportlab.lib.styles import ParagraphStyle
                     from reportlab.lib.units import inch
                     from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
@@ -503,7 +504,12 @@ def download_translation(
 
                         return extracted_blocks
 
-                    standard_flowchart_base_pdf = "/app/storage/d65bcd2e-e73a-4ad5-a3f1-6d3436fe9b6a.pdf"
+                    standard_front_base_doc = _fitz.open(f"/app/storage/{book.file_path}")
+
+                    def _reset_page_to_clean_base(page, page_num):
+                        page.add_redact_annot(page.rect, fill=(1, 1, 1))
+                        page.apply_redactions()
+                        page.show_pdf_page(page.rect, standard_front_base_doc, page_num, overlay=True)
 
                     def _insert_fitted_textbox(page, rect, text, *, bold=False, align=0, sizes=(12, 11, 10, 9, 8)):
                         content = (text or "").strip()
@@ -526,17 +532,18 @@ def download_translation(
                                 return True
                         return False
 
-                    def _render_standard_flowchart_page(page):
-                        heading_src = "Examination"
-                        paragraph_src = (
-                            "In order to receive the desired credits for this course, students must complete "
-                            "the examination. This has been included in the back of this manual. The examination "
-                            "is open book and students may refer to their manual when completing their work. "
-                            "Once completed, students are requested to email work for grading in either WORD or "
-                            "PDF format to info@tiuniversity.com or take the online examination."
+                    def _render_standard_flowchart_page(page, page_num):
+                        exam_heading_src = "Examination"
+                        exam_paragraph_src = (
+                            "To earn the credits for this course, students need to pass the examination. "
+                            "The information relevant to that examination is found at the end of the manual. "
+                            "The examination is open book and students may refer to the manual while working. "
+                            "When complete, please email your work to info@tiuniversity.com in WORD or PDF format, "
+                            "or take the examination online."
                         )
-                        warning_src = "PLEASE ENSURE THAT THE COURSE CODE AND STUDENT NUMBER IS INCLUDED."
-
+                        exam_warning_src = (
+                            "PLEASE ENSURE THAT YOUR COURSE CODE AND STUDENT NUMBER ARE INCLUDED."
+                        )
                         chart_title_src = "The following Flow Chart shows how the credit hours are applied in all of our programs."
                         chart_box_titles = [
                             "Certificate in Ministry",
@@ -567,76 +574,71 @@ def download_translation(
                         ]
 
                         source_strings = [
-                            heading_src,
-                            paragraph_src,
-                            warning_src,
+                            exam_heading_src,
+                            exam_paragraph_src,
+                            exam_warning_src,
                             chart_title_src,
                             *chart_box_titles,
                             *chart_box_values,
                             *chart_right_labels,
                         ]
                         translated_strings = _batch_translate(source_strings, source_code, target_code)
-                        heading_tr = translated_strings[0]
-                        paragraph_tr = translated_strings[1]
-                        warning_tr = translated_strings[2]
+                        exam_heading_tr = translated_strings[0]
+                        exam_paragraph_tr = translated_strings[1]
+                        exam_warning_tr = translated_strings[2]
                         chart_title_tr = translated_strings[3]
                         title_trs = translated_strings[4:11]
                         value_trs = translated_strings[11:18]
                         right_trs = translated_strings[18:25]
 
-                        page.draw_rect(page.rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
-                        if _os.path.exists(standard_flowchart_base_pdf):
-                            base_doc = _fitz.open(standard_flowchart_base_pdf)
-                            page.show_pdf_page(page.rect, base_doc, 3, overlay=True)
-                            base_doc.close()
+                        exam_heading_rect = _fitz.Rect(30, 76, 220, 106)
+                        exam_paragraph_rect = _fitz.Rect(30, 108, 565, 182)
+                        exam_warning_rect = _fitz.Rect(30, 166, 565, 202)
+                        exam_top_clear_rect = _fitz.Rect(24, 68, 572, 216)
 
-                        heading_rect = _fitz.Rect(55, 72, 540, 104)
-                        paragraph_rect = _fitz.Rect(55, 110, 548, 188)
-                        warning_rect = _fitz.Rect(55, 190, 548, 228)
-                        chart_title_rect = _fitz.Rect(150, 238, 455, 278)
+                        chart_title_rect = _fitz.Rect(150, 208, 455, 244)
                         box_title_rects = [
-                            _fitz.Rect(205, 286, 360, 306),
-                            _fitz.Rect(205, 347, 360, 367),
-                            _fitz.Rect(205, 409, 360, 429),
-                            _fitz.Rect(205, 471, 360, 491),
-                            _fitz.Rect(205, 533, 360, 553),
-                            _fitz.Rect(205, 595, 360, 615),
-                            _fitz.Rect(205, 657, 360, 677),
+                            _fitz.Rect(205, 236, 360, 256),
+                            _fitz.Rect(205, 297, 360, 317),
+                            _fitz.Rect(205, 359, 360, 379),
+                            _fitz.Rect(205, 421, 360, 441),
+                            _fitz.Rect(205, 483, 360, 503),
+                            _fitz.Rect(205, 545, 360, 565),
+                            _fitz.Rect(205, 607, 360, 627),
                         ]
                         box_value_rects = [
-                            _fitz.Rect(228, 306, 375, 327),
-                            _fitz.Rect(228, 368, 375, 389),
-                            _fitz.Rect(228, 429, 375, 450),
-                            _fitz.Rect(228, 492, 375, 513),
-                            _fitz.Rect(228, 554, 375, 575),
-                            _fitz.Rect(228, 616, 375, 637),
-                            _fitz.Rect(228, 678, 375, 699),
+                            _fitz.Rect(228, 262, 375, 283),
+                            _fitz.Rect(228, 324, 375, 345),
+                            _fitz.Rect(228, 385, 375, 406),
+                            _fitz.Rect(228, 448, 375, 469),
+                            _fitz.Rect(228, 510, 375, 531),
+                            _fitz.Rect(228, 572, 375, 593),
+                            _fitz.Rect(228, 634, 375, 655),
                         ]
                         right_label_rects = [
-                            _fitz.Rect(382, 313, 545, 331),
-                            _fitz.Rect(382, 374, 545, 392),
-                            _fitz.Rect(382, 436, 545, 454),
-                            _fitz.Rect(382, 498, 545, 516),
-                            _fitz.Rect(382, 560, 545, 578),
-                            _fitz.Rect(382, 622, 545, 640),
-                            _fitz.Rect(382, 684, 545, 702),
+                            _fitz.Rect(382, 269, 545, 287),
+                            _fitz.Rect(382, 330, 545, 348),
+                            _fitz.Rect(382, 392, 545, 410),
+                            _fitz.Rect(382, 454, 545, 472),
+                            _fitz.Rect(382, 516, 545, 534),
+                            _fitz.Rect(382, 578, 545, 596),
+                            _fitz.Rect(382, 640, 545, 658),
                         ]
 
                         clear_rects = [
-                            heading_rect,
-                            paragraph_rect,
-                            warning_rect,
+                            exam_top_clear_rect,
                             chart_title_rect,
                             *box_title_rects,
                             *box_value_rects,
                             *right_label_rects,
                         ]
                         for rect in clear_rects:
-                            page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+                            page.add_redact_annot(_fitz.Rect(rect), fill=(1, 1, 1))
+                        page.apply_redactions()
 
-                        _insert_fitted_textbox(page, heading_rect, heading_tr, bold=True, align=0, sizes=(15, 14, 13))
-                        _insert_fitted_textbox(page, paragraph_rect, paragraph_tr, bold=False, align=0, sizes=(12, 11, 10, 9))
-                        _insert_fitted_textbox(page, warning_rect, warning_tr, bold=True, align=0, sizes=(13, 12, 11, 10, 9))
+                        _insert_fitted_textbox(page, exam_heading_rect, exam_heading_tr, bold=True, align=0, sizes=(13, 12, 11))
+                        _insert_fitted_textbox(page, exam_paragraph_rect, exam_paragraph_tr, bold=False, align=0, sizes=(10, 9, 8))
+                        _insert_fitted_textbox(page, exam_warning_rect, exam_warning_tr, bold=True, align=0, sizes=(11, 10, 9))
                         _insert_fitted_textbox(page, chart_title_rect, chart_title_tr, bold=False, align=1, sizes=(11, 10, 9))
                         for rect, text in zip(box_title_rects, title_trs):
                             _insert_fitted_textbox(page, rect, text, bold=False, align=1, sizes=(11, 10, 9, 8))
@@ -644,6 +646,70 @@ def download_translation(
                             _insert_fitted_textbox(page, rect, text, bold=False, align=1, sizes=(10, 9, 8, 7))
                         for rect, text in zip(right_label_rects, right_trs):
                             _insert_fitted_textbox(page, rect, text, bold=False, align=0, sizes=(10, 9, 8, 7))
+
+                    def _render_standard_preface_page(page, page_num):
+                        title_src = "CHRISTIAN FOUNDATIONS"
+                        para1_src = (
+                            "This book is designed to provide condensed information. It is not intended to reprint "
+                            "all the information that is otherwise available, but instead to complement, amplify and "
+                            "supplement other texts. You are urged to read all the available material, learn as much "
+                            "as possible and tailor the information to your individual needs. Every effort has been "
+                            "made to make this book as complete and as accurate as possible. However, there may be "
+                            "mistakes, both typographical and in content. Therefore, this text should be used only as "
+                            "a general guide and not as the ultimate source of information. The author shall have "
+                            "neither liability nor responsibility to any person or entity with respect to any loss or "
+                            "damage caused, or alleged to have been caused, directly or indirectly, by the information "
+                            "contained in this book."
+                        )
+                        para2_src = (
+                            "No unauthorized copy of this book may be made and/or distributed in any way, whether "
+                            "by copy or digital transfer to any other persons other than the person for which it is intended."
+                        )
+                        address_src = (
+                            "Published in South Africa by JOY MINISTRIES\n"
+                            "P.O. Box 15611, Lambton, Germiston\n"
+                            "South Africa. 1414\n"
+                            "www.joyministries.com\n"
+                            "Email: admin@joyministries.com"
+                        )
+                        scripture_src = (
+                            "All scripture quotations, unless otherwise indicated, are taken from the New King James "
+                            "Version of the Bible. Copyright © 1982 by Thomas Nelson, Inc. Used by permission. "
+                            "All rights reserved."
+                        )
+
+                        translated_strings = _batch_translate(
+                            [title_src, para1_src, para2_src, address_src, scripture_src],
+                            source_code,
+                            target_code,
+                        )
+                        title_tr, para1_tr, para2_tr, address_tr, scripture_tr = translated_strings
+
+                        title_rect = _fitz.Rect(80, 72, 515, 112)
+                        para1_rect = _fitz.Rect(35, 106, 560, 250)
+                        para2_rect = _fitz.Rect(30, 276, 565, 366)
+                        address_rect = _fitz.Rect(95, 372, 500, 470)
+                        scripture_rect = _fitz.Rect(20, 438, 575, 620)
+
+                        for rect in (title_rect, para1_rect, para2_rect, address_rect, scripture_rect):
+                            page.add_redact_annot(rect, fill=(1, 1, 1))
+                        page.apply_redactions()
+
+                        _insert_fitted_textbox(page, title_rect, title_tr, bold=True, align=1, sizes=(18, 17, 16, 15))
+                        _insert_fitted_textbox(page, para1_rect, para1_tr, bold=False, align=0, sizes=(11, 10, 9, 8))
+                        _insert_fitted_textbox(page, para2_rect, para2_tr, bold=False, align=0, sizes=(11, 10, 9, 8))
+                        _insert_fitted_textbox(page, address_rect, address_tr, bold=False, align=1, sizes=(11, 10, 9, 8))
+                        _insert_fitted_textbox(page, scripture_rect, scripture_tr, bold=False, align=0, sizes=(10, 9, 8))
+                        page.insert_link({
+                            "kind": _fitz.LINK_URI,
+                            "from": _fitz.Rect(160, 418, 435, 434),
+                            "uri": "https://www.joyministries.com",
+                        })
+                        page.insert_link({
+                            "kind": _fitz.LINK_URI,
+                            "from": _fitz.Rect(135, 434, 460, 450),
+                            "uri": "mailto:admin@joyministries.com",
+                        })
 
                     # --- Translate front matter in-place using overlay method ---
                     for page_num in range(front_matter_end_idx + 1):
@@ -683,11 +749,11 @@ def download_translation(
                                     page.insert_text(_fitz.Point(x, y), trans, fontsize=fs, fontname=fontname, fontfile=fontfile, color=color)
                             continue
                         # Translate text blocks
-                        split_front_matter_paragraphs = page_num in {2, 4, 6}
+                        split_front_matter_paragraphs = page_num in {2, 6}
                         text_blocks = _extract_text_blocks(
                             page,
                             split_paragraphs=split_front_matter_paragraphs,
-                            aggressive_merge=(page_num == 4),
+                            aggressive_merge=False,
                         )
                         is_toc_page = _is_toc_page(page, text_blocks)
                         if is_toc_page and text_blocks:
@@ -709,55 +775,45 @@ def download_translation(
 
                             text_blocks = [tb for tb in text_blocks if _is_toc_block(tb[1])]
                         if text_blocks:
-                            # For TOC page: use stored translation lines by position
-                            stored_lookup = {}
-                            if is_toc_page and translation.translated_text:
-                                trans_toc_lines = [l.strip() for l in translation.translated_text.split("\n")
-                                                   if l.strip() and ("....." in l or "….." in l)]
-                                orig_toc_blocks = [(i, orig) for i, (_, orig, _b) in enumerate(text_blocks) if "....." in orig or "….." in orig]
-                                for pos, (blk_idx, orig) in enumerate(orig_toc_blocks):
-                                    if pos < len(trans_toc_lines):
-                                        stored_lookup[blk_idx] = trans_toc_lines[pos]
-
                             translated = [
                                 _normalize_render_quotes(t)
                                 for t in _batch_translate([t for _, t, _ in text_blocks], source_code, target_code)
                             ]
-                            # Override TOC lines with stored translation
-                            translated = [stored_lookup.get(i, trans) for i, trans in enumerate(translated)]
                             if page_num == 3 or _is_flowchart_page(page):
-                                _render_standard_flowchart_page(page)
+                                _render_standard_flowchart_page(page, page_num)
+                                continue
+                            elif page_num == 4 and any(
+                                marker in page.get_text("text", sort=True).upper()
+                                for marker in ("CHRISTIAN FOUNDATIONS", "JOY MINISTRIES", "PUBLISHED IN SOUTH AFRICA")
+                            ):
+                                _render_standard_preface_page(page, page_num)
                                 continue
                             elif is_toc_page:
-                                toc_title = next(
-                                    (
-                                        line.strip()
-                                        for line in translation.translated_text.split("\n")
-                                        if line.strip()
-                                        and any(
-                                            marker in line.strip().upper()
-                                            for marker in (
-                                                "TABLE OF CONTENTS",
-                                                "INHOUDSOPGAWE",
-                                                "INHOUDS",
-                                                "YALIYOMO",
-                                                "ZVIRI MUKATI",
-                                                "TABLE DES",
-                                                "ÍNDICE",
-                                                "JEDWALI",
-                                                "ATỌKA",
-                                            )
+                                toc_title = next((
+                                    trans
+                                    for (_bbox, orig, _b), trans in zip(text_blocks, translated)
+                                    if any(
+                                        marker in orig.upper()
+                                        for marker in (
+                                            "TABLE OF CONTENTS",
+                                            "INHOUDSOPGAWE",
+                                            "INHOUDS",
+                                            "YALIYOMO",
+                                            "ZVIRI MUKATI",
+                                            "TABLE DES",
+                                            "ÍNDICE",
+                                            "JEDWALI",
+                                            "ATỌKA",
                                         )
-                                    ),
-                                    translated[0] if translated else "Table of Contents",
-                                )
+                                    )
+                                ), translated[0] if translated else "Table of Contents")
                                 toc_lines = [
-                                    l.strip()
-                                    for l in translation.translated_text.split("\n")
-                                    if l.strip() and ("....." in l or "….." in l)
+                                    trans.strip()
+                                    for (_bbox, orig, _b), trans in zip(text_blocks, translated)
+                                    if "....." in orig or "….." in orig
                                 ]
-                                content_rect = _fitz.Rect(40, 70, page.rect.x1 - 40, page.rect.y1 - 55)
-                                page.draw_rect(content_rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+                                page.add_redact_annot(page.rect, fill=(1, 1, 1))
+                                page.apply_redactions()
                                 _insert_fitted_textbox(
                                     page,
                                     _fitz.Rect(60, 95, page.rect.x1 - 60, 125),
@@ -767,29 +823,38 @@ def download_translation(
                                     sizes=(16, 15, 14, 13),
                                 )
                                 y = 150
-                                import re as _re2
                                 for line in toc_lines:
-                                    m = _re2.search(r'(\d+)\s*$', line.rstrip('.').strip())
-                                    pagenum = m.group(1) if m else ""
-                                    title = _re2.sub(r'\.{2,}.*', '', line).strip()
-                                    title = _re2.sub(r'\s*\d+\s*$', '', title).strip()
-                                    fs = 10
-                                    title_w = _fitz.get_text_length(title, fontname="helv", fontsize=fs)
-                                    num_w = _fitz.get_text_length(pagenum, fontname="helv", fontsize=fs) if pagenum else 0
-                                    left_x, right_x = 70, page.rect.x1 - 70
-                                    dot_w = _fitz.get_text_length(".", fontname="helv", fontsize=fs)
-                                    gap = max(20, (right_x - left_x) - title_w - num_w)
-                                    dots = "." * max(3, int(gap / max(dot_w, 1)))
-                                    page.insert_text(_fitz.Point(left_x, y), title, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0), overlay=True)
-                                    page.insert_text(_fitz.Point(left_x + title_w, y), dots, fontsize=fs, fontname="helv", color=(0,0,0), overlay=True)
-                                    if pagenum:
-                                        page.insert_text(_fitz.Point(right_x - num_w, y), pagenum, fontsize=fs, fontname="helv", color=(0,0,0), overlay=True)
+                                    title = _re.sub(r'\.{2,}.*', '', line).strip()
+                                    title = _re.sub(r'\s*\d+\s*$', '', title).strip()
+                                    page.insert_text(
+                                        _fitz.Point(70, y),
+                                        title,
+                                        fontsize=10,
+                                        fontname="dejv",
+                                        fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                        color=(0,0,0),
+                                        overlay=True,
+                                    )
                                     y += 22
                                 continue
                             else:
-                                for (bbox, _, _b), trans in zip(text_blocks, translated):
-                                    page.add_redact_annot(_fitz.Rect(bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2), fill=(1,1,1))
-                                page.apply_redactions()
+                                page_upper = page.get_text("text", sort=True).upper()
+                                is_publishing_page = any(
+                                    marker in page_upper
+                                    for marker in (
+                                        "PUBLISHED IN SOUTH AFRICA",
+                                        "JOY MINISTRIES",
+                                        "COPY OF THIS BOOK",
+                                        "ALL RIGHTS RESERVED",
+                                    )
+                                )
+                                if split_front_matter_paragraphs:
+                                    page.add_redact_annot(page.rect, fill=(1, 1, 1))
+                                    page.apply_redactions()
+                                else:
+                                    for (bbox, _, _b), _trans in zip(text_blocks, translated):
+                                        page.add_redact_annot(_fitz.Rect(bbox[0]-2, bbox[1]-2, bbox[2]+2, bbox[3]+2), fill=(1,1,1))
+                                    page.apply_redactions()
                                 # Track y position per bbox to stack sub-blocks vertically
                                 y_cursor = {}
                                 for (bbox, orig_text, is_bold), trans in zip(text_blocks, translated):
@@ -842,18 +907,6 @@ def download_translation(
                                         forced_lines = []
                                         if "•" in trans or "•" in orig_text:
                                             bullet_items = [item.strip(" •") for item in trans.split("•") if item.strip(" •")]
-                                        elif page_num == 4 and any(
-                                            marker in orig_text.lower()
-                                            for marker in [
-                                                "published in south africa",
-                                                "joy ministries",
-                                                "p.o. box",
-                                                "south africa.",
-                                                "www.joyministries.com",
-                                                "email:",
-                                            ]
-                                        ):
-                                            continue
                                         elif (
                                             page_num == 6
                                             and len(orig_text.strip()) <= 32
@@ -926,41 +979,6 @@ def download_translation(
                                                     y_cursor[bbox_key] = y_start + n_lines * fs * 1.35 + gap_after
                                                     break
 
-                                page_upper = page.get_text("text", sort=True).upper()
-                                is_publishing_page = any(
-                                    marker in page_upper
-                                    for marker in (
-                                        "PUBLISHED IN SOUTH AFRICA",
-                                        "JOY MINISTRIES",
-                                        "COPY OF THIS BOOK",
-                                        "ALL RIGHTS RESERVED",
-                                    )
-                                )
-                                if page_num == 4 and is_publishing_page and not is_toc_page:
-                                    address_lines = [
-                                        "Publié en Afrique du Sud par JOY MINISTRIES",
-                                        "Boîte postale 15611, Lambton, Germiston",
-                                        "Afrique du Sud. 1414",
-                                        "www.joyministries.com",
-                                        "Courriel :",
-                                        "admin@joyministries.com",
-                                    ]
-                                    address_rect = _fitz.Rect(145, 290, 450, 395)
-                                    page.draw_rect(address_rect, color=(1,1,1), fill=(1,1,1), overlay=True)
-                                    y = 304
-                                    for idx, line in enumerate(address_lines):
-                                        rect = _fitz.Rect(150, y - 10, 445, y + 9)
-                                        page.insert_textbox(
-                                            rect,
-                                            line,
-                                            fontsize=10,
-                                            fontname="dejv",
-                                            fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                                            color=(0,0,0),
-                                            align=1,
-                                        )
-                                        y += 16 if idx < 3 else 15
-
                                 if page_num == 6:
                                     century_line = _batch_translate(["2nd Century AD."], source_code, target_code)[0]
                                     century_rect = _fitz.Rect(56, 436, 250, 452)
@@ -982,10 +1000,15 @@ def download_translation(
                     indent_style = ParagraphStyle("IND", fontName="DejaVu", fontSize=11,
                         leftIndent=20, spaceBefore=2, spaceAfter=2, leading=15)
 
-                    body_buf = _io.BytesIO()
-                    body_doc_rl = SimpleDocTemplate(body_buf, pagesize=A4,
-                        leftMargin=0.75*inch, rightMargin=0.75*inch,
-                        topMargin=0.75*inch, bottomMargin=0.75*inch)
+                    def _new_body_doc(buffer):
+                        return SimpleDocTemplate(
+                            buffer,
+                            pagesize=A4,
+                            leftMargin=0.75*inch,
+                            rightMargin=0.75*inch,
+                            topMargin=0.75*inch,
+                            bottomMargin=0.75*inch,
+                        )
 
                     def _line_is_bold(spans):
                         total_chars = sum(len(s.get("text", "")) for s in spans)
@@ -998,14 +1021,17 @@ def download_translation(
                         )
                         return bold_chars >= total_chars * 0.45
 
+                    body_end_page_exclusive = max(body_start_page_idx, len(orig_doc) - 2)
+
                     def _source_line_records():
                         records = []
                         start_page = min(max(body_start_page_idx, 0), len(orig_doc))
+                        end_page = min(max(body_end_page_exclusive, start_page), len(orig_doc))
 
                         def _normalize_line(value):
                             return _re.sub(r"\s+", " ", value or "").strip()
 
-                        for source_page_num in range(start_page, len(orig_doc)):
+                        for source_page_num in range(start_page, end_page):
                             page = orig_doc[source_page_num]
                             page_dict = page.get_text("dict", sort=True)
                             styled_lines = []
@@ -1057,7 +1083,36 @@ def download_translation(
                         original = record["text"].strip()
                         if original.startswith("CC101 Christian Foundations"):
                             return True
+                        if _re.match(r'^(CC101|BH505)\b', original, _re.IGNORECASE):
+                            return True
+                        if (
+                            len(original) <= 100
+                            and _re.search(r'\b(CC101|BH505)\b', original, _re.IGNORECASE)
+                            and _re.search(r'\b\d+\b$', original)
+                        ):
+                            return True
                         if _re.fullmatch(r"\d+", original):
+                            return True
+                        return False
+
+                    def _skip_translated_footer_line(text):
+                        value = (text or "").strip()
+                        if not value:
+                            return False
+                        upper = value.upper()
+                        if _re.fullmatch(r"\d+", value):
+                            return True
+                        if "BH505" in upper and _re.search(r"\b\d+\b$", upper):
+                            return True
+                        if "CC101" in upper and _re.search(r"\b\d+\b$", upper):
+                            return True
+                        if "APOSTOLIC EXPANSION" in upper and ("BH505" in upper or _re.search(r"\b\d+\b$", upper)):
+                            return True
+                        if "KUWEDZERA KWEVAAPOSTORI" in upper and ("BH505" in upper or _re.search(r"\b\d+\b$", upper)):
+                            return True
+                        if "CHRISTIAN FOUNDATIONS" in upper and ("CC101" in upper or _re.search(r"\b\d+\b$", upper)):
+                            return True
+                        if "NHEYO DZECHIKRISTU" in upper and ("CC101" in upper or _re.search(r"\b\d+\b$", upper)):
                             return True
                         return False
 
@@ -1065,7 +1120,7 @@ def download_translation(
                         value = (text or "").strip()
                         if not value:
                             return False
-                        if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', value, _re.IGNORECASE):
+                        if _re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+\s*[-–]\s+\D', value, _re.IGNORECASE):
                             return True
                         if value.startswith("• "):
                             return True
@@ -1098,21 +1153,90 @@ def download_translation(
                             return True
                         return False
 
+                    def _split_embedded_chapter_marker(text):
+                        value = (text or "").strip()
+                        if not value:
+                            return [text]
+                        parts = _re.split(
+                            r'(?=\b(?:CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+\s*[-–]\s+\D)',
+                            value,
+                            maxsplit=1,
+                            flags=_re.IGNORECASE,
+                        )
+                        if len(parts) == 2 and parts[0].strip():
+                            return [parts[0].strip(), parts[1].strip()]
+                        return [text]
+
+                    def _is_toc_like_line(value):
+                        candidate = (value or "").strip()
+                        if not candidate:
+                            return False
+                        if _re.search(r'\.{2,}\s*\d+\s*$', candidate):
+                            return True
+                        if candidate.count(".") >= 8:
+                            return True
+                        return False
+
+                    def _find_body_start_index(lines):
+                        for idx, line in enumerate(lines):
+                            candidate = (line or "").strip()
+                            if not candidate or _is_toc_like_line(candidate):
+                                continue
+                            is_intro = bool(introduction_pattern.match(candidate))
+                            is_ch1 = bool(
+                                _re.match(
+                                    r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*1\s*[-–]\s+\D',
+                                    candidate,
+                                    _re.IGNORECASE,
+                                )
+                            )
+                            if not (is_intro or is_ch1):
+                                continue
+                            lookahead = []
+                            for next_line in lines[idx + 1:]:
+                                nxt = (next_line or "").strip()
+                                if not nxt:
+                                    continue
+                                lookahead.append(nxt)
+                                if len(lookahead) >= 4:
+                                    break
+                            if not lookahead:
+                                continue
+                            if any(
+                                not _is_toc_like_line(nxt)
+                                and not _re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+\s*[-–]\s+\D', nxt, _re.IGNORECASE)
+                                for nxt in lookahead
+                            ):
+                                return idx
+                        return 0
+
                     # Pre-process: join continuation lines (scripture refs split across lines)
                     raw_lines = translation.translated_text.split("\n")
+                    body_start_index = _find_body_start_index(raw_lines)
+                    raw_lines = raw_lines[body_start_index:]
                     source_records = _source_line_records()
                     source_iter = iter(source_records)
                     translated_records = []
                     for line in raw_lines:
                         p = line.strip()
                         source_record = next(source_iter, None) if p else None
-                        if p and not source_record:
-                            source_record = {
-                                "page_number": 0,
-                                "text": "",
-                                "bold": False,
-                                "size": 11,
-                            }
+                        if p and source_record is None:
+                            break
+                        split_parts = _split_embedded_chapter_marker(line) if p else [line]
+                        if len(split_parts) == 2:
+                            prefix_part, chapter_part = split_parts
+                            if translated_records and prefix_part and _should_join_with_previous(translated_records[-1]["text"], prefix_part):
+                                translated_records[-1]["text"] = translated_records[-1]["text"].rstrip() + " " + prefix_part.strip()
+                            elif prefix_part.strip():
+                                translated_records.append({
+                                    "text": prefix_part,
+                                    "source": source_record,
+                                })
+                            translated_records.append({
+                                "text": chapter_part,
+                                "source": source_record,
+                            })
+                            continue
                         # Continuation: starts with verse ref like "44:8" or "10:14" or "13:20"
                         if translated_records and p and _re.match(r'^\d+:\d+', p):
                             translated_records[-1]["text"] = translated_records[-1]["text"].rstrip() + " " + p
@@ -1142,7 +1266,7 @@ def download_translation(
 
                     def _chapter_heading_number(value):
                         match = _re.match(
-                            r'^(?:CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*(\d+)',
+                            r'^(?:CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*(\d+)\s*[-–]\s+\D',
                             (value or "").strip(),
                             _re.IGNORECASE,
                         )
@@ -1177,7 +1301,7 @@ def download_translation(
                         if not candidate:
                             continue
                         m = _re.match(
-                            r'^((?:CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+\s*[-–]\s*)(.+)$',
+                            r'^((?:CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+\s*[-–]\s+)(.+)$',
                             candidate,
                             _re.IGNORECASE,
                         )
@@ -1190,9 +1314,11 @@ def download_translation(
                         candidate = (value or "").strip()
                         if not candidate:
                             return False
+                        if _is_toc_like_line(candidate):
+                            return False
                         if introduction_pattern.match(candidate) and "....." not in candidate:
                             return True
-                        if _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*1\b', candidate, _re.IGNORECASE) and "....." not in candidate:
+                        if _re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*1\s*[-–]\s+\D', candidate, _re.IGNORECASE) and "....." not in candidate:
                             return True
                         return False
 
@@ -1211,33 +1337,41 @@ def download_translation(
                         word_count = len(_re.findall(r'\b[\wÀ-ÿ-]+\b', candidate))
                         return source_bold or source_size >= 12 or word_count <= 5
 
-                    story = []
-                    skip_toc = False
-                    reached_body_start = False
-                    last_emitted_chapter_num = 0
+                    def _is_tail_promo_start(value):
+                        candidate = (value or "").strip()
+                        upper = candidate.upper()
+                        return any(
+                            marker in upper
+                            for marker in (
+                                "WHETHER YOU ARE SEARCHING FOR A BIBLE COLLEGE",
+                                "UNGAVE UCHITSVAGA BIBLE COLLEGE",
+                                "SI VOUS CHERCHEZ UNE ÉCOLE BIBLIQUE",
+                                "SI ESTÁ BUSCANDO UN COLEGIO BÍBLICO",
+                                "TEAM IMPACT CHRISTIAN UNIVERSITY",
+                                "YUNIVHESITI YECHIKWATA CHEMHEDZISIRO YECHIKRISTU",
+                                "SPAN IMPAK CHRISTELIKE UNIVERSITEIT",
+                                "TEAM IMPACT CHRISTLICHE UNIVERSITÄT",
+                            )
+                        )
+
+                    body_sections = [[]]
+                    seen_chapter_numbers = set()
                     previous_body_heading = None
+
+                    def _append_flowable(flowable):
+                        body_sections[-1].append(flowable)
+
                     for record in translated_records:
                         p = record["text"].strip()
                         source_record = record["source"]
-                        # Skip TOC section
-                        if not reached_body_start and p and ("TABLE OF CONTENTS" in p.upper() or "YALIYOMO" in p.upper() or "ZVIRI MUKATI" in p.upper() or "TABLE DES" in p.upper() or "ÍNDICE" in p.upper() or "JEDWALI" in p.upper() or "ATỌKA" in p.upper()):
-                            skip_toc = True
+                        if _is_tail_promo_start(p):
+                            break
+                        if _skip_translated_footer_line(p):
                             continue
-                        if skip_toc:
-                            if _is_body_start_heading(p):
-                                skip_toc = False
-                                reached_body_start = True
-                            else:
-                                continue
-                        if not reached_body_start:
-                            if _is_body_start_heading(p):
-                                reached_body_start = True
-                            else:
-                                continue
-                        if source_record and _skip_body_record(source_record):
+                        if source_record and _skip_body_record(source_record) and _skip_translated_footer_line(p):
                             continue
                         if not p:
-                            story.append(Spacer(1, 0.05*inch))
+                            _append_flowable(Spacer(1, 0.05*inch))
                             continue
                         if p.startswith("• "):
                             bullet_rest = p[2:].strip()
@@ -1246,21 +1380,21 @@ def download_translation(
                                 bullet_only = "• " + inline_bullet_split.group(1).strip()
                                 bullet_safe = _normalize_render_quotes(bullet_only).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                                 tail_safe = _normalize_render_quotes(inline_bullet_split.group(2).strip()).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-                                story.append(Paragraph(bullet_safe, indent_style))
-                                story.append(Paragraph(tail_safe, body_style))
+                                _append_flowable(Paragraph(bullet_safe, indent_style))
+                                _append_flowable(Paragraph(tail_safe, body_style))
                                 continue
                         normalized_upper = _re.sub(r'\s+', ' ', p).strip().upper()
                         promoted_heading = chapter_heading_lookup.get(normalized_upper)
-                        if promoted_heading and not _re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', p, _re.IGNORECASE):
+                        if promoted_heading and not _re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+\s*[-–]\s+\D', p, _re.IGNORECASE):
                             promoted_num = _chapter_heading_number(promoted_heading)
-                            if promoted_num and promoted_num > last_emitted_chapter_num:
+                            if promoted_num and promoted_num not in seen_chapter_numbers:
                                 p = promoted_heading
                         p = _normalize_render_quotes(p)
                         safe = p.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                         is_source_bold = bool(source_record and source_record["bold"])
                         source_size = float(source_record["size"] if source_record else 11)
                         # Pattern-based overrides (reliable regardless of source pairing)
-                        is_chapter = bool(_re.match(r'^(CHAPTER|SURA|CHITSAUKO|CHAPITRE|CAPÍTULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+', p, _re.IGNORECASE))
+                        is_chapter = bool(_re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s*\d+\s*[-–]\s+\D', p, _re.IGNORECASE))
                         is_allcaps = len(p) < 80 and p.isupper() and len(p) > 3
                         is_lettered = bool(_re.match(r'^[a-zA-Z]\) .{2,}', p) and len(p) < 120)
                         looks_like_sentence = (
@@ -1277,53 +1411,56 @@ def download_translation(
                         is_intro_heading = bool(introduction_pattern.match(p)) and "....." not in p
                         if is_chapter or is_intro_heading:
                             chapter_num = _chapter_heading_number(p)
-                            if chapter_num and chapter_num <= last_emitted_chapter_num:
+                            if chapter_num and chapter_num in seen_chapter_numbers:
                                 continue
+                            if chapter_num and body_sections[-1]:
+                                body_sections.append([])
                             if chapter_num:
-                                last_emitted_chapter_num = chapter_num
-                            story.append(Spacer(1, 0.15*inch))
-                            story.append(Paragraph(safe, heading_style))
-                            story.append(Spacer(1, 0.08*inch))
+                                seen_chapter_numbers.add(chapter_num)
+                            _append_flowable(Spacer(1, 0.15*inch))
+                            _append_flowable(Paragraph(safe, heading_style))
+                            _append_flowable(Spacer(1, 0.08*inch))
                             previous_body_heading = "intro" if is_intro_heading else "chapter"
                         elif previous_body_heading == "intro" and _is_intro_title_line(p, source_record):
-                            story.append(Spacer(1, 0.05*inch))
-                            story.append(Paragraph(safe, subhead_style))
+                            _append_flowable(Spacer(1, 0.05*inch))
+                            _append_flowable(Paragraph(safe, subhead_style))
                             previous_body_heading = None
                         elif (
                             normalized_upper in chapter_heading_lookup
                             and chapter_heading_lookup[normalized_upper]
-                            and _chapter_heading_number(chapter_heading_lookup[normalized_upper]) == last_emitted_chapter_num
+                            and _chapter_heading_number(chapter_heading_lookup[normalized_upper]) in seen_chapter_numbers
                         ):
                             # Keep summary/title echoes as subheads instead of re-promoting
                             # them into chapter headings after the real chapter title has
                             # already been emitted.
-                            story.append(Spacer(1, 0.05*inch))
-                            story.append(Paragraph(safe, subhead_style))
+                            _append_flowable(Spacer(1, 0.05*inch))
+                            _append_flowable(Paragraph(safe, subhead_style))
                             previous_body_heading = None
                         elif is_allcaps or is_lettered or safe_source_bold:
-                            story.append(Spacer(1, 0.05*inch))
-                            story.append(Paragraph(safe, subhead_style))
+                            _append_flowable(Spacer(1, 0.05*inch))
+                            _append_flowable(Paragraph(safe, subhead_style))
                             previous_body_heading = None
                         elif _re.match(r'^\d+\. ', p):
-                            story.append(Paragraph(safe, subhead_style if _is_numbered_subhead_line(p, source_record) else body_style))
+                            _append_flowable(Paragraph(safe, subhead_style if _is_numbered_subhead_line(p, source_record) else body_style))
                             previous_body_heading = None
                         elif p.startswith("• "):
-                            story.append(Paragraph(safe, indent_style))
+                            _append_flowable(Paragraph(safe, indent_style))
                             previous_body_heading = None
                         elif _re.match(r'^\([ivxabc]+\)', p):
-                            story.append(Paragraph(safe, indent_style))
+                            _append_flowable(Paragraph(safe, indent_style))
                             previous_body_heading = None
                         else:
-                            story.append(Paragraph(safe, body_style))
+                            _append_flowable(Paragraph(safe, body_style))
                             previous_body_heading = None
                     try:
-                        body_doc_rl.build(story)
-                        body_bytes = body_buf.getvalue()
-                        # Repair PDF via fitz to avoid malformed page tree on merge
-                        _repair = _fitz.open("pdf", body_bytes)
-                        _rbuf = _io.BytesIO()
-                        _repair.save(_rbuf, garbage=4, deflate=True)
-                        body_bytes = _rbuf.getvalue()
+                        body_sections = [section for section in body_sections if section]
+                        merged_body = _fitz.open()
+                        for section in body_sections:
+                            section_buf = _io.BytesIO()
+                            _new_body_doc(section_buf).build(section)
+                            section_pdf = _fitz.open("pdf", section_buf.getvalue())
+                            merged_body.insert_pdf(section_pdf)
+                        body_bytes = merged_body.tobytes(garbage=4, deflate=True)
                     except Exception as _e:
                         import logging as _log
                         _log.getLogger(__name__).warning(f"ReportLab build failed: {_e}")

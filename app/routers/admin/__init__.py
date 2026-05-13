@@ -9,6 +9,7 @@ from app.routers.admin import (
     content,
     users,
     institutions,
+    integration,
 )
 
 router = APIRouter(prefix="/admin")
@@ -21,3 +22,4 @@ router.include_router(translations.router)
 router.include_router(content.router)
 router.include_router(users.router)
 router.include_router(institutions.router)
+router.include_router(integration.router)
