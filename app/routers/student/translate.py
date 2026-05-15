@@ -1,3 +1,4 @@
+import os
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -9,6 +10,228 @@ from app.services.translation_service import TranslationService
 
 
 router = APIRouter(prefix="/translate", tags=["Translations"])
+
+
+DEFAULT_FONT_SET = {
+    "reportlab_regular_file": "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+    "reportlab_bold_file": "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+    "overlay_regular_file": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "overlay_bold_file": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+}
+
+SPECIAL_SCRIPT_FONT_MAP = {
+    "hi": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSerifDevanagari-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSerifDevanagari-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansDevanagari-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansDevanagari-Bold.ttf",
+    },
+    "mr": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSerifDevanagari-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSerifDevanagari-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansDevanagari-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansDevanagari-Bold.ttf",
+    },
+    "ne": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSerifDevanagari-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSerifDevanagari-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansDevanagari-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansDevanagari-Bold.ttf",
+    },
+    "sa": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSerifDevanagari-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSerifDevanagari-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansDevanagari-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansDevanagari-Bold.ttf",
+    },
+    "bn": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansBengali-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansBengali-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansBengali-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansBengali-Bold.ttf",
+    },
+    "pa": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansGurmukhi-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansGurmukhi-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansGurmukhi-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansGurmukhi-Bold.ttf",
+    },
+    "gu": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansGujarati-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansGujarati-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansGujarati-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansGujarati-Bold.ttf",
+    },
+    "ta": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansTamil-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansTamil-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansTamil-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansTamil-Bold.ttf",
+    },
+    "te": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansTelugu-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansTelugu-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansTelugu-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansTelugu-Bold.ttf",
+    },
+    "kn": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansKannada-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansKannada-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansKannada-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansKannada-Bold.ttf",
+    },
+    "ml": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansMalayalam-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansMalayalam-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansMalayalam-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansMalayalam-Bold.ttf",
+    },
+    "si": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansSinhala-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansSinhala-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansSinhala-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansSinhala-Bold.ttf",
+    },
+    "th": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansThai-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansThai-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansThai-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansThai-Bold.ttf",
+    },
+    "km": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansKhmer-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansKhmer-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansKhmer-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansKhmer-Bold.ttf",
+    },
+    "my": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansMyanmar-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansMyanmar-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansMyanmar-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansMyanmar-Bold.ttf",
+    },
+    "lo": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansLao-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansLao-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansLao-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansLao-Bold.ttf",
+    },
+    "zh": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansCJKsc-Regular.otf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansCJKsc-Bold.otf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansCJKsc-Regular.otf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansCJKsc-Bold.otf",
+    },
+    "zh-cn": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansCJKsc-Regular.otf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansCJKsc-Bold.otf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansCJKsc-Regular.otf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansCJKsc-Bold.otf",
+    },
+    "zh-tw": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansCJKtc-Regular.otf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansCJKtc-Bold.otf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansCJKtc-Regular.otf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansCJKtc-Bold.otf",
+    },
+    "ja": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansJP-Regular.otf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansJP-Bold.otf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansJP-Regular.otf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansJP-Bold.otf",
+    },
+    "ko": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansKR-Regular.otf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansKR-Bold.otf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansKR-Regular.otf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansKR-Bold.otf",
+    },
+    "ar": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoNaskhArabic-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoNaskhArabic-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoNaskhArabic-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoNaskhArabic-Bold.ttf",
+    },
+    "ur": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoNastaliqUrdu-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoNastaliqUrdu-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoNastaliqUrdu-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoNastaliqUrdu-Bold.ttf",
+    },
+    "fa": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoNaskhArabic-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoNaskhArabic-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoNaskhArabic-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoNaskhArabic-Bold.ttf",
+    },
+    "ps": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoNaskhArabic-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoNaskhArabic-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoNaskhArabic-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoNaskhArabic-Bold.ttf",
+    },
+    "ku": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoNaskhArabic-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoNaskhArabic-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoNaskhArabic-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoNaskhArabic-Bold.ttf",
+    },
+    "he": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansHebrew-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansHebrew-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansHebrew-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansHebrew-Bold.ttf",
+    },
+    "am": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansEthiopic-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansEthiopic-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansEthiopic-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansEthiopic-Bold.ttf",
+    },
+    "ti": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansEthiopic-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansEthiopic-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansEthiopic-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansEthiopic-Bold.ttf",
+    },
+    "hy": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansArmenian-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansArmenian-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansArmenian-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansArmenian-Bold.ttf",
+    },
+    "ka": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansGeorgian-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansGeorgian-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansGeorgian-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansGeorgian-Bold.ttf",
+    },
+    "bo": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansTibetan-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansTibetan-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansTibetan-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansTibetan-Bold.ttf",
+    },
+    "mn": {
+        "reportlab_regular_file": "/app/app/assets/fonts/NotoSansMongolian-Regular.ttf",
+        "reportlab_bold_file": "/app/app/assets/fonts/NotoSansMongolian-Bold.ttf",
+        "overlay_regular_file": "/app/app/assets/fonts/NotoSansMongolian-Regular.ttf",
+        "overlay_bold_file": "/app/app/assets/fonts/NotoSansMongolian-Bold.ttf",
+    },
+}
+
+
+def _resolve_font_set(language_code: str | None) -> dict[str, str]:
+    code = (language_code or "").lower()
+    font_set = SPECIAL_SCRIPT_FONT_MAP.get(code)
+    if not font_set:
+        return DEFAULT_FONT_SET.copy()
+
+    resolved = DEFAULT_FONT_SET.copy()
+    for key, path in font_set.items():
+        if os.path.exists(path):
+            resolved[key] = path
+    return resolved
 
 
 @router.get("/book/{book_id}")
@@ -271,8 +494,6 @@ def download_translation(
                     from reportlab.pdfbase.ttfonts import TTFont
                     import re as _re
                     import fitz as _fitz
-                    import pytesseract
-                    from PIL import Image as _PILImage
                     from app.models import Language
                     from app.tasks.translation_tasks import _batch_translate
 
@@ -281,9 +502,19 @@ def download_translation(
                     target_code = lang.libretranslate_code or lang.code if lang else "sw"
                     source_code = src_lang.libretranslate_code or src_lang.code if src_lang else "en"
 
+                    font_set = _resolve_font_set(target_code)
+                    reportlab_regular_file = font_set["reportlab_regular_file"]
+                    reportlab_bold_file = font_set["reportlab_bold_file"]
+                    reportlab_regular_name = "DocFont"
+                    reportlab_bold_name = "DocFont-Bold"
+                    overlay_regular_file = font_set["overlay_regular_file"]
+                    overlay_bold_file = font_set["overlay_bold_file"]
+                    overlay_regular_name = "docfont"
+                    overlay_bold_name = "docfontb"
+
                     try:
-                        pdfmetrics.registerFont(TTFont("DejaVu", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"))
-                        pdfmetrics.registerFont(TTFont("DejaVu-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"))
+                        pdfmetrics.registerFont(TTFont(reportlab_regular_name, reportlab_regular_file))
+                        pdfmetrics.registerFont(TTFont(reportlab_bold_name, reportlab_bold_file))
                     except Exception:
                         pass
 
@@ -319,16 +550,6 @@ def download_translation(
                                 if chapter_1_pattern.match(line) and "....." not in line:
                                     return idx
                         return min(6, last_page - 1) + 1
-
-                    def _is_flowchart_page(page):
-                        page_text = page.get_text("text", sort=True)
-                        upper = page_text.upper()
-                        return (
-                            "FLOW CHART" in upper
-                            or "CHATI INOTEVERA" in upper
-                            or "CREDIT HOURS" in upper
-                            or "CERTIFICATE IN MINISTRY" in upper
-                        )
 
                     def _is_toc_page(page, text_blocks=None):
                         page_text = page.get_text("text", sort=True)
@@ -515,8 +736,8 @@ def download_translation(
                         content = (text or "").strip()
                         if not content:
                             return False
-                        fontname = "dejvb" if bold else "dejv"
-                        fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+                        fontname = overlay_bold_name if bold else overlay_regular_name
+                        fontfile = overlay_bold_file if bold else overlay_regular_file
                         for fs in sizes:
                             result = page.insert_textbox(
                                 _fitz.Rect(rect),
@@ -532,120 +753,51 @@ def download_translation(
                                 return True
                         return False
 
-                    def _render_standard_flowchart_page(page, page_num):
-                        exam_heading_src = "Examination"
-                        exam_paragraph_src = (
-                            "To earn the credits for this course, students need to pass the examination. "
-                            "The information relevant to that examination is found at the end of the manual. "
-                            "The examination is open book and students may refer to the manual while working. "
-                            "When complete, please email your work to info@tiuniversity.com in WORD or PDF format, "
-                            "or take the examination online."
+                    def _render_standard_promo_page(page):
+                        title_src = (
+                            "Whether you are searching for a Bible College, Christian University, "
+                            "Theological Seminary or Christian College, you have come to the right place!"
                         )
-                        exam_warning_src = (
-                            "PLEASE ENSURE THAT YOUR COURSE CODE AND STUDENT NUMBER ARE INCLUDED."
+                        line2_src = (
+                            "Team Impact Christian University is an accredited online Christian learning "
+                            "facility that caters for all levels of anointed Christian study."
                         )
-                        chart_title_src = "The following Flow Chart shows how the credit hours are applied in all of our programs."
-                        chart_box_titles = [
-                            "Certificate in Ministry",
-                            "Diploma in Ministry",
-                            "Bachelor Degrees",
-                            "Bachelor Degree Honors",
-                            "Master's Degree",
-                            "Doctor of Ministry Degree",
-                            "Doctor of Philosophy",
-                        ]
-                        chart_box_values = [
-                            "30 Credit Hours",
-                            "30 Credit Hours",
-                            "60 Credit Hours",
-                            "18 Credit Hours",
-                            "18 Credit Hours",
-                            "36 Credit Hours",
-                            "36 Credit Hours",
-                        ]
-                        chart_right_labels = [
-                            "30 Credit Hours",
-                            "=60 Credit Hours",
-                            "=120 Credit Hours",
-                            "=136 Credit Hours",
-                            "=156 Credit Hours",
-                            "=192 Credit Hours",
-                            "=228 Credit Hours",
-                        ]
+                        line3_src = "Team Impact Christian University"
+                        line4_src = "The house-hold name in ministry training"
+                        website_src = "www.tiuniversity.com"
+                        email_src = "info@tiuniversity.com"
 
-                        source_strings = [
-                            exam_heading_src,
-                            exam_paragraph_src,
-                            exam_warning_src,
-                            chart_title_src,
-                            *chart_box_titles,
-                            *chart_box_values,
-                            *chart_right_labels,
-                        ]
-                        translated_strings = _batch_translate(source_strings, source_code, target_code)
-                        exam_heading_tr = translated_strings[0]
-                        exam_paragraph_tr = translated_strings[1]
-                        exam_warning_tr = translated_strings[2]
-                        chart_title_tr = translated_strings[3]
-                        title_trs = translated_strings[4:11]
-                        value_trs = translated_strings[11:18]
-                        right_trs = translated_strings[18:25]
+                        title_tr, line2_tr, line3_tr, line4_tr, website_tr, email_tr = _batch_translate(
+                            [title_src, line2_src, line3_src, line4_src, website_src, email_src],
+                            source_code,
+                            target_code,
+                        )
 
-                        exam_heading_rect = _fitz.Rect(30, 76, 220, 106)
-                        exam_paragraph_rect = _fitz.Rect(30, 108, 565, 182)
-                        exam_warning_rect = _fitz.Rect(30, 166, 565, 202)
-                        exam_top_clear_rect = _fitz.Rect(24, 68, 572, 216)
-
-                        chart_title_rect = _fitz.Rect(150, 208, 455, 244)
-                        box_title_rects = [
-                            _fitz.Rect(205, 236, 360, 256),
-                            _fitz.Rect(205, 297, 360, 317),
-                            _fitz.Rect(205, 359, 360, 379),
-                            _fitz.Rect(205, 421, 360, 441),
-                            _fitz.Rect(205, 483, 360, 503),
-                            _fitz.Rect(205, 545, 360, 565),
-                            _fitz.Rect(205, 607, 360, 627),
-                        ]
-                        box_value_rects = [
-                            _fitz.Rect(228, 262, 375, 283),
-                            _fitz.Rect(228, 324, 375, 345),
-                            _fitz.Rect(228, 385, 375, 406),
-                            _fitz.Rect(228, 448, 375, 469),
-                            _fitz.Rect(228, 510, 375, 531),
-                            _fitz.Rect(228, 572, 375, 593),
-                            _fitz.Rect(228, 634, 375, 655),
-                        ]
-                        right_label_rects = [
-                            _fitz.Rect(382, 269, 545, 287),
-                            _fitz.Rect(382, 330, 545, 348),
-                            _fitz.Rect(382, 392, 545, 410),
-                            _fitz.Rect(382, 454, 545, 472),
-                            _fitz.Rect(382, 516, 545, 534),
-                            _fitz.Rect(382, 578, 545, 596),
-                            _fitz.Rect(382, 640, 545, 658),
-                        ]
-
-                        clear_rects = [
-                            exam_top_clear_rect,
-                            chart_title_rect,
-                            *box_title_rects,
-                            *box_value_rects,
-                            *right_label_rects,
-                        ]
-                        for rect in clear_rects:
-                            page.add_redact_annot(_fitz.Rect(rect), fill=(1, 1, 1))
+                        for rect in (
+                            _fitz.Rect(18, 20, page.rect.x1 - 18, 265),
+                            _fitz.Rect(150, 520, page.rect.x1 - 150, 610),
+                        ):
+                            page.add_redact_annot(rect, fill=(1, 1, 1))
                         page.apply_redactions()
 
-                        _insert_fitted_textbox(page, exam_heading_rect, exam_heading_tr, bold=True, align=0, sizes=(13, 12, 11))
-                        _insert_fitted_textbox(page, exam_paragraph_rect, exam_paragraph_tr, bold=False, align=0, sizes=(10, 9, 8))
-                        _insert_fitted_textbox(page, exam_warning_rect, exam_warning_tr, bold=True, align=0, sizes=(11, 10, 9))
-                        _insert_fitted_textbox(page, chart_title_rect, chart_title_tr, bold=False, align=1, sizes=(11, 10, 9))
-                        for rect, text in zip(box_title_rects, title_trs):
-                            _insert_fitted_textbox(page, rect, text, bold=False, align=1, sizes=(11, 10, 9, 8))
-                        for rect, text in zip(box_value_rects, value_trs):
-                            _insert_fitted_textbox(page, rect, text, bold=False, align=1, sizes=(10, 9, 8, 7))
-                        for rect, text in zip(right_label_rects, right_trs):
-                            _insert_fitted_textbox(page, rect, text, bold=False, align=0, sizes=(10, 9, 8, 7))
+                        _insert_fitted_textbox(page, _fitz.Rect(26, 40, page.rect.x1 - 26, 88), title_tr, bold=False, align=1, sizes=(14, 13, 12, 11))
+                        _insert_fitted_textbox(page, _fitz.Rect(40, 98, page.rect.x1 - 40, 172), line2_tr, bold=False, align=1, sizes=(12, 11, 10, 9, 8))
+                        _insert_fitted_textbox(page, _fitz.Rect(110, 180, page.rect.x1 - 110, 214), line3_tr, bold=False, align=1, sizes=(13, 12, 11, 10))
+                        _insert_fitted_textbox(page, _fitz.Rect(110, 218, page.rect.x1 - 110, 252), line4_tr, bold=False, align=1, sizes=(11, 10, 9, 8))
+                        website_rect = _fitz.Rect(190, 540, page.rect.x1 - 190, 560)
+                        email_rect = _fitz.Rect(185, 563, page.rect.x1 - 185, 585)
+                        _insert_fitted_textbox(page, website_rect, website_tr, bold=False, align=1, sizes=(11, 10, 9))
+                        _insert_fitted_textbox(page, email_rect, email_tr, bold=False, align=1, sizes=(11, 10, 9))
+                        page.insert_link({
+                            "kind": _fitz.LINK_URI,
+                            "from": website_rect,
+                            "uri": "https://www.tiuniversity.com",
+                        })
+                        page.insert_link({
+                            "kind": _fitz.LINK_URI,
+                            "from": email_rect,
+                            "uri": "mailto:info@tiuniversity.com",
+                        })
 
                     def _render_standard_preface_page(page, page_num):
                         title_src = "CHRISTIAN FOUNDATIONS"
@@ -665,13 +817,13 @@ def download_translation(
                             "No unauthorized copy of this book may be made and/or distributed in any way, whether "
                             "by copy or digital transfer to any other persons other than the person for which it is intended."
                         )
-                        address_src = (
-                            "Published in South Africa by JOY MINISTRIES\n"
-                            "P.O. Box 15611, Lambton, Germiston\n"
-                            "South Africa. 1414\n"
-                            "www.joyministries.com\n"
-                            "Email: admin@joyministries.com"
-                        )
+                        address_lines_src = [
+                            "Published in South Africa by JOY MINISTRIES",
+                            "P.O. Box 15611, Lambton, Germiston",
+                            "South Africa. 1414",
+                            "www.joyministries.com",
+                            "Email: admin@joyministries.com",
+                        ]
                         scripture_src = (
                             "All scripture quotations, unless otherwise indicated, are taken from the New King James "
                             "Version of the Bible. Copyright © 1982 by Thomas Nelson, Inc. Used by permission. "
@@ -679,35 +831,47 @@ def download_translation(
                         )
 
                         translated_strings = _batch_translate(
-                            [title_src, para1_src, para2_src, address_src, scripture_src],
+                            [title_src, para1_src, para2_src, *address_lines_src, scripture_src],
                             source_code,
                             target_code,
                         )
-                        title_tr, para1_tr, para2_tr, address_tr, scripture_tr = translated_strings
+                        title_tr = translated_strings[0]
+                        para1_tr = translated_strings[1]
+                        para2_tr = translated_strings[2]
+                        address_lines_tr = translated_strings[3:8]
+                        scripture_tr = translated_strings[8]
 
-                        title_rect = _fitz.Rect(80, 72, 515, 112)
-                        para1_rect = _fitz.Rect(35, 106, 560, 250)
-                        para2_rect = _fitz.Rect(30, 276, 565, 366)
-                        address_rect = _fitz.Rect(95, 372, 500, 470)
-                        scripture_rect = _fitz.Rect(20, 438, 575, 620)
+                        title_rect = _fitz.Rect(80, 72, 515, 104)
+                        para1_rect = _fitz.Rect(35, 100, 560, 258)
+                        para2_rect = _fitz.Rect(30, 258, 565, 304)
+                        address_clear_rect = _fitz.Rect(90, 306, 505, 370)
+                        scripture_rect = _fitz.Rect(20, 374, 575, 454)
 
-                        for rect in (title_rect, para1_rect, para2_rect, address_rect, scripture_rect):
+                        for rect in (title_rect, para1_rect, para2_rect, address_clear_rect, scripture_rect):
                             page.add_redact_annot(rect, fill=(1, 1, 1))
                         page.apply_redactions()
 
                         _insert_fitted_textbox(page, title_rect, title_tr, bold=True, align=1, sizes=(18, 17, 16, 15))
-                        _insert_fitted_textbox(page, para1_rect, para1_tr, bold=False, align=0, sizes=(11, 10, 9, 8))
-                        _insert_fitted_textbox(page, para2_rect, para2_tr, bold=False, align=0, sizes=(11, 10, 9, 8))
-                        _insert_fitted_textbox(page, address_rect, address_tr, bold=False, align=1, sizes=(11, 10, 9, 8))
-                        _insert_fitted_textbox(page, scripture_rect, scripture_tr, bold=False, align=0, sizes=(10, 9, 8))
+                        _insert_fitted_textbox(page, para1_rect, para1_tr, bold=False, align=0, sizes=(11, 10, 9, 8, 7))
+                        _insert_fitted_textbox(page, para2_rect, para2_tr, bold=False, align=0, sizes=(11, 10, 9, 8, 7))
+                        _insert_fitted_textbox(page, scripture_rect, scripture_tr, bold=False, align=0, sizes=(10, 9, 8, 7))
+
+                        line_height = 12
+                        address_y = 312
+                        for idx, line in enumerate(address_lines_tr):
+                            rect = _fitz.Rect(95, address_y + idx * line_height, 500, address_y + idx * line_height + 14)
+                            _insert_fitted_textbox(page, rect, line, bold=False, align=1, sizes=(10, 9, 8))
+
+                        website_rect = _fitz.Rect(150, address_y + 3 * line_height - 1, 445, address_y + 3 * line_height + 13)
+                        email_rect = _fitz.Rect(120, address_y + 4 * line_height - 1, 475, address_y + 4 * line_height + 13)
                         page.insert_link({
                             "kind": _fitz.LINK_URI,
-                            "from": _fitz.Rect(160, 418, 435, 434),
+                            "from": website_rect,
                             "uri": "https://www.joyministries.com",
                         })
                         page.insert_link({
                             "kind": _fitz.LINK_URI,
-                            "from": _fitz.Rect(135, 434, 460, 450),
+                            "from": email_rect,
                             "uri": "mailto:admin@joyministries.com",
                         })
 
@@ -739,8 +903,8 @@ def download_translation(
                                     c = span["color"]
                                     color = ((c >> 16 & 255)/255, (c >> 8 & 255)/255, (c & 255)/255)
                                     fs = span["size"]
-                                    fontname = "dejvb" if "Bold" in span.get("font","") else "dejv"
-                                    fontfile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if "Bold" in span.get("font","") else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+                                    fontname = overlay_bold_name if "Bold" in span.get("font","") else overlay_regular_name
+                                    fontfile = overlay_bold_file if "Bold" in span.get("font","") else overlay_regular_file
                                     # Center the translated text at the same x position
                                     tw = _fitz.get_text_length(trans, fontname="helv", fontsize=fs)
                                     page_cx = page.rect.width / 2
@@ -779,10 +943,17 @@ def download_translation(
                                 _normalize_render_quotes(t)
                                 for t in _batch_translate([t for _, t, _ in text_blocks], source_code, target_code)
                             ]
-                            if page_num == 3 or _is_flowchart_page(page):
-                                _render_standard_flowchart_page(page, page_num)
-                                continue
-                            elif page_num == 4 and any(
+                            if page_num == 2 and not is_toc_page:
+                                # New-format books no longer use the old chart section on the
+                                # examination page. Wipe the lower visual area so any baked-in
+                                # chart/image content from the source PDF cannot survive.
+                                page.draw_rect(
+                                    _fitz.Rect(0, 215, page.rect.x1, page.rect.y1 - 28),
+                                    color=(1, 1, 1),
+                                    fill=(1, 1, 1),
+                                    overlay=True,
+                                )
+                            if page_num == 4 and any(
                                 marker in page.get_text("text", sort=True).upper()
                                 for marker in ("CHRISTIAN FOUNDATIONS", "JOY MINISTRIES", "PUBLISHED IN SOUTH AFRICA")
                             ):
@@ -830,8 +1001,8 @@ def download_translation(
                                         _fitz.Point(70, y),
                                         title,
                                         fontsize=10,
-                                        fontname="dejv",
-                                        fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                        fontname=overlay_regular_name,
+                                        fontfile=overlay_regular_file,
                                         color=(0,0,0),
                                         overlay=True,
                                     )
@@ -857,8 +1028,16 @@ def download_translation(
                                     page.apply_redactions()
                                 # Track y position per bbox to stack sub-blocks vertically
                                 y_cursor = {}
+                                pending_warning_tail_skip = False
                                 for (bbox, orig_text, is_bold), trans in zip(text_blocks, translated):
                                     rect = _fitz.Rect(bbox)
+                                    upper_orig = (orig_text or "").strip().upper()
+                                    if pending_warning_tail_skip:
+                                        if len(upper_orig) <= 100 and any(
+                                            marker in upper_orig for marker in ("COURSE CODE", "STUDENT NUMBER", "INCLUDED")
+                                        ):
+                                            continue
+                                        pending_warning_tail_skip = False
                                     # TOC page (index 5): expand dotted lines to full page width
                                     if is_toc_page and ("....." in orig_text or "….." in orig_text):
                                         import re as _re2
@@ -874,12 +1053,79 @@ def download_translation(
                                         gap = (right_x - left_x) - title_w - num_w
                                         dots = "." * max(3, int(gap / dot_w))
                                         y = rect.y1 - 1
-                                        page.insert_text(_fitz.Point(left_x, y), title, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0))
+                                        page.insert_text(_fitz.Point(left_x, y), title, fontsize=fs, fontname=overlay_regular_name, fontfile=overlay_regular_file, color=(0,0,0))
                                         page.insert_text(_fitz.Point(left_x + title_w, y), dots, fontsize=fs, fontname="helv", color=(0,0,0))
                                         if pagenum:
                                             page.insert_text(_fitz.Point(right_x - num_w, y), pagenum, fontsize=fs, fontname="helv", color=(0,0,0))
                                     else:
+                                        if "PLEASE ENSURE" in orig_text.upper():
+                                            bbox_key = (round(bbox[0]), round(bbox[1]))
+                                            y_start = y_cursor.get(bbox_key, rect.y0)
+                                            source_parts = _re.split(r'PLEASE ENSURE', orig_text, maxsplit=1, flags=_re.IGNORECASE)
+                                            paragraph_src = source_parts[0].strip()
+                                            warning_src = (
+                                                "Please ensure that the course code and student number are included."
+                                                if len(source_parts) > 1 else ""
+                                            )
+                                            parts_to_translate = [paragraph_src]
+                                            if warning_src:
+                                                parts_to_translate.append(warning_src)
+                                            translated_parts = _batch_translate(parts_to_translate, source_code, target_code)
+                                            paragraph_tr = translated_parts[0]
+                                            warning_tr = translated_parts[1] if len(translated_parts) > 1 else ""
+
+                                            para_rect = _fitz.Rect(rect.x0, y_start, page.rect.x1 - 57, page.rect.y1 - 20)
+                                            body_fs = 10
+                                            warning_y = y_start + 72
+                                            for fs in [10, 9, 8]:
+                                                result = page.insert_textbox(
+                                                    para_rect,
+                                                    paragraph_tr,
+                                                    fontsize=fs,
+                                                    fontname=overlay_regular_name,
+                                                    fontfile=overlay_regular_file,
+                                                    color=(0, 0, 0),
+                                                )
+                                                if result >= 0:
+                                                    body_fs = fs
+                                                    tw = _fitz.get_text_length(paragraph_tr, fontname="helv", fontsize=fs)
+                                                    n_lines = max(1, -(-int(tw) // max(int(para_rect.width), 1)))
+                                                    warning_y = y_start + n_lines * fs * 1.35 + fs * 0.95
+                                                    break
+
+                                            if warning_tr:
+                                                warning_rect = _fitz.Rect(rect.x0, warning_y, page.rect.x1 - 30, page.rect.y1 - 20)
+                                                warning_text = " ".join(warning_tr.split())
+                                                for fs in [11, 10, 9]:
+                                                    result = page.insert_textbox(
+                                                        warning_rect,
+                                                        warning_text,
+                                                        fontsize=fs,
+                                                        fontname=overlay_bold_name,
+                                                        fontfile=overlay_bold_file,
+                                                        color=(0, 0, 0),
+                                                        align=0,
+                                                    )
+                                                    if result >= 0:
+                                                        tw = _fitz.get_text_length(warning_text, fontname="helv", fontsize=fs)
+                                                        n_lines = max(1, -(-int(tw) // max(int(warning_rect.width), 1)))
+                                                        y_cursor[bbox_key] = warning_y + n_lines * fs * 1.35 + fs * 0.35
+                                                        break
+                                                else:
+                                                    y_cursor[bbox_key] = warning_y + body_fs * 2.2
+                                            else:
+                                                y_cursor[bbox_key] = warning_y
+                                            pending_warning_tail_skip = True
+                                            continue
+
                                         front_matter_body = split_front_matter_paragraphs and len(orig_text) > 40
+                                        front_matter_warning = any(
+                                            marker in orig_text.lower()
+                                            for marker in [
+                                                "please ensure",
+                                                "ndapota",
+                                            ]
+                                        )
                                         force_plain = front_matter_body or any(
                                             marker in orig_text.lower()
                                             for marker in [
@@ -893,18 +1139,27 @@ def download_translation(
                                                 "email:",
                                             ]
                                         )
-                                        use_bold = is_bold and not force_plain
-                                        fontfile_use = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if use_bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-                                        fontname_use = "dejvb" if use_bold else "dejv"
-                                        fs_use = 13 if use_bold else 10
+                                        use_bold = front_matter_warning or (is_bold and not force_plain)
+                                        if front_matter_warning:
+                                            fontfile_use = overlay_bold_file
+                                            fontname_use = overlay_bold_name
+                                            fs_use = 11
+                                        else:
+                                            fontfile_use = overlay_bold_file if use_bold else overlay_regular_file
+                                            fontname_use = overlay_bold_name if use_bold else overlay_regular_name
+                                            fs_use = 13 if use_bold else 10
                                         bbox_key = (round(bbox[0]), round(bbox[1]))
                                         y_start = y_cursor.get(bbox_key, rect.y0)
                                         front_matter_heading = split_front_matter_paragraphs and use_bold and len(orig_text) <= 80
-                                        render_x1 = page.rect.x1 - 57 if (front_matter_body or front_matter_heading) else rect.x1
+                                        render_x1 = page.rect.x1 - 30 if front_matter_warning else (
+                                            page.rect.x1 - 57 if (front_matter_body or front_matter_heading) else rect.x1
+                                        )
                                         render_rect = _fitz.Rect(rect.x0, y_start, render_x1, page.rect.y1 - 20)
                                         bullet_items = []
                                         address_items = []
                                         forced_lines = []
+                                        if front_matter_warning:
+                                            forced_lines = [" ".join(trans.split())]
                                         if "•" in trans or "•" in orig_text:
                                             bullet_items = [item.strip(" •") for item in trans.split("•") if item.strip(" •")]
                                         elif (
@@ -987,18 +1242,20 @@ def download_translation(
                                         _fitz.Point(58, 447),
                                         century_line,
                                         fontsize=10,
-                                        fontname="dejv",
-                                        fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                        fontname=overlay_regular_name,
+                                        fontfile=overlay_regular_file,
                                         color=(0,0,0),
                                         overlay=True,
                                     )
                     # --- Build body from stored translation using original PDF line styles ---
-                    heading_style = ParagraphStyle("H", fontName="DejaVu-Bold", fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=TA_LEFT)
-                    subhead_style = ParagraphStyle("SH", fontName="DejaVu-Bold", fontSize=11, spaceBefore=8, spaceAfter=2, leading=14, alignment=TA_LEFT)
-                    body_style = ParagraphStyle("B", fontName="DejaVu", fontSize=11, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_JUSTIFY)
-                    body_style_bold = ParagraphStyle("BB", fontName="DejaVu-Bold", fontSize=11, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_JUSTIFY)
-                    indent_style = ParagraphStyle("IND", fontName="DejaVu", fontSize=11,
-                        leftIndent=20, spaceBefore=2, spaceAfter=2, leading=15)
+                    heading_style = ParagraphStyle("H", fontName=reportlab_bold_name, fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=1)
+                    chapter_heading_style = ParagraphStyle("HC", fontName=reportlab_bold_name, fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=1)
+                    intro_title_style = ParagraphStyle("IT", fontName=reportlab_bold_name, fontSize=16, spaceBefore=6, spaceAfter=8, leading=20, alignment=1)
+                    subhead_style = ParagraphStyle("SH", fontName=reportlab_bold_name, fontSize=11, spaceBefore=8, spaceAfter=2, leading=14, alignment=TA_LEFT)
+                    body_style = ParagraphStyle("B", fontName=reportlab_regular_name, fontSize=11, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_LEFT)
+                    body_style_bold = ParagraphStyle("BB", fontName=reportlab_bold_name, fontSize=11, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_LEFT)
+                    indent_style = ParagraphStyle("IND", fontName=reportlab_regular_name, fontSize=11,
+                        leftIndent=20, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_LEFT)
 
                     def _new_body_doc(buffer):
                         return SimpleDocTemplate(
@@ -1418,12 +1675,12 @@ def download_translation(
                             if chapter_num:
                                 seen_chapter_numbers.add(chapter_num)
                             _append_flowable(Spacer(1, 0.15*inch))
-                            _append_flowable(Paragraph(safe, heading_style))
+                            _append_flowable(Paragraph(safe, chapter_heading_style if is_chapter else heading_style))
                             _append_flowable(Spacer(1, 0.08*inch))
                             previous_body_heading = "intro" if is_intro_heading else "chapter"
                         elif previous_body_heading == "intro" and _is_intro_title_line(p, source_record):
                             _append_flowable(Spacer(1, 0.05*inch))
-                            _append_flowable(Paragraph(safe, subhead_style))
+                            _append_flowable(Paragraph(safe, intro_title_style))
                             previous_body_heading = None
                         elif (
                             normalized_upper in chapter_heading_lookup
@@ -1476,7 +1733,16 @@ def download_translation(
                             if not text or text.startswith("©"): continue
                             if len(text) <= 150 and ("@" in text or "www." in text): continue
                             p100_blocks.append((b["bbox"], text))
-                        if p100_blocks:
+                        if p100_blocks and any(
+                            marker in p100.get_text("text", sort=True).upper()
+                            for marker in (
+                                "WHETHER YOU ARE SEARCHING FOR A BIBLE COLLEGE",
+                                "TEAM IMPACT CHRISTIAN UNIVERSITY",
+                                "TIUNIVERSITY.COM",
+                            )
+                        ):
+                            _render_standard_promo_page(p100)
+                        elif p100_blocks:
                             translated_p100 = _batch_translate([t for _, t in p100_blocks], source_code, target_code)
                             for (bbox, _), trans in zip(p100_blocks, translated_p100):
                                 p100.add_redact_annot(_fitz.Rect(bbox), fill=(1,1,1))
@@ -1484,7 +1750,7 @@ def download_translation(
                             for (bbox, _), trans in zip(p100_blocks, translated_p100):
                                 rect = _fitz.Rect(bbox)
                                 for fs in [10, 8, 7]:
-                                    if p100.insert_textbox(rect, trans, fontsize=fs, fontname="dejv", fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", color=(0,0,0)) >= 0:
+                                    if p100.insert_textbox(rect, trans, fontsize=fs, fontname=overlay_regular_name, fontfile=overlay_regular_file, color=(0,0,0)) >= 0:
                                         break
 
                     # --- Assemble: translated front matter + body + last 2 pages ---
@@ -1499,6 +1765,26 @@ def download_translation(
                         out.insert_pdf(body_fitz)
                     if last_page >= body_start_page_idx:
                         out.insert_pdf(orig_doc, from_page=max(last_page - 1, body_start_page_idx), to_page=last_page)
+
+                    def _stamp_dynamic_page_numbers(doc):
+                        if len(doc) <= 1:
+                            return
+                        for idx in range(1, len(doc)):
+                            page = doc[idx]
+                            label = str(idx)
+                            number_rect = _fitz.Rect(72, page.rect.y1 - 28, page.rect.x1 - 72, page.rect.y1 - 8)
+                            page.insert_textbox(
+                                number_rect,
+                                label,
+                                fontsize=10,
+                                fontname=reportlab_regular_name,
+                                fontfile=reportlab_regular_file,
+                                color=(0, 0, 0),
+                                align=1,
+                                overlay=True,
+                            )
+
+                    _stamp_dynamic_page_numbers(out)
 
                     final_buf = _io.BytesIO()
                     out.save(final_buf)
@@ -1595,13 +1881,13 @@ def download_translation(
                             page.add_redact_annot(redact_rect, fill=(1,1,1))
                         page.apply_redactions()
 
-                        _font_regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-                        _font_bold    = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+                        _font_regular = overlay_regular_file
+                        _font_bold    = overlay_bold_file
 
                         for (bbox, orig_text, fontsize, is_bold), trans in zip(text_blocks, translated):
                             rect = _fitz.Rect(bbox)
                             fontfile = _font_bold if is_bold else _font_regular
-                            fontname = "dejvb" if is_bold else "dejv"
+                            fontname = overlay_bold_name if is_bold else overlay_regular_name
                             fs = fontsize if fontsize > 13 else 11.7
 
                             # TOC lines: title left, dot leaders, page number flush right
@@ -1679,58 +1965,19 @@ def download_translation(
                                 if result >= 0:
                                     break
 
-                        # OCR flowchart images
-                        try:
-                            import pytesseract
-                            from PIL import Image as PILImage
-                            from app.tasks.translation_tasks import _batch_translate
-                            for b in blocks:
-                                if b.get("type") != 1:
-                                    continue
-                                img_bbox = _fitz.Rect(b["bbox"])
-                                clip_pix = page.get_pixmap(matrix=_fitz.Matrix(2,2), clip=img_bbox)
-                                img = PILImage.frombytes("RGB", [clip_pix.width, clip_pix.height], clip_pix.samples)
-                                ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-                                n = len(ocr_data["text"])
-                                scale_x = img_bbox.width / clip_pix.width
-                                scale_y = img_bbox.height / clip_pix.height
-                                ocr_lines = {}
-                                for i in range(n):
-                                    word = ocr_data["text"][i].strip()
-                                    if not word or int(ocr_data["conf"][i]) < 50:
-                                        continue
-                                    key = (ocr_data["block_num"][i], ocr_data["par_num"][i], ocr_data["line_num"][i])
-                                    if key not in ocr_lines:
-                                        ocr_lines[key] = {"words":[], "x":ocr_data["left"][i], "y":ocr_data["top"][i], "w":0, "h":ocr_data["height"][i]}
-                                    ocr_lines[key]["words"].append(word)
-                                    ocr_lines[key]["w"] = max(ocr_lines[key]["w"], ocr_data["left"][i]+ocr_data["width"][i]-ocr_lines[key]["x"])
-                                if not ocr_lines:
-                                    continue
-                                line_keys = list(ocr_lines.keys())
-                                texts = [" ".join(ocr_lines[k]["words"]) for k in line_keys]
-                                translated_lines = _batch_translate(texts, source_code, target_code)
-                                line_data = []
-                                for key, trans in zip(line_keys, translated_lines):
-                                    line = ocr_lines[key]
-                                    x0 = img_bbox.x0 + line["x"]*scale_x
-                                    y0 = img_bbox.y0 + line["y"]*scale_y
-                                    x1 = img_bbox.x0 + (line["x"]+line["w"])*scale_x
-                                    y1 = img_bbox.y0 + (line["y"]+line["h"])*scale_y
-                                    fs = max((y1-y0)*0.85, 8)
-                                    line_data.append((x0, y0, fs, trans))
-                                # Keep image, white-out each text line area and overlay translation
-                                for x0, y0, fs, trans in line_data:
-                                    page.add_redact_annot(_fitz.Rect(x0, y0, img_bbox.x1, y0 + fs * 1.3), fill=(1,1,1))
-                                page.apply_redactions()
-                                for x0, y0, fs, trans in line_data:
-                                    page.insert_text(
-                                        _fitz.Point(x0, y0 + fs), trans,
-                                        fontsize=fs, fontname="dejv",
-                                        fontfile="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                                        color=(0,0,0)
-                                    )
-                        except Exception:
-                            pass
+                    if len(doc) > 1:
+                        for idx in range(1, len(doc)):
+                            page = doc[idx]
+                            page.insert_textbox(
+                                _fitz.Rect(72, page.rect.y1 - 28, page.rect.x1 - 72, page.rect.y1 - 8),
+                                str(idx),
+                                fontsize=10,
+                                fontname=reportlab_regular_name,
+                                fontfile=reportlab_regular_file,
+                                color=(0, 0, 0),
+                                align=1,
+                                overlay=True,
+                            )
 
                     buf = _io.BytesIO()
                     doc.save(buf, deflate=True, garbage=4)
@@ -1767,6 +2014,11 @@ def download_translation(
                 src_lang = db.query(Language).filter(Language.id == translation.source_language_id).first()
                 target_code = lang.libretranslate_code or lang.code if lang else "sw"
                 source_code = src_lang.libretranslate_code or src_lang.code if src_lang else "en"
+                docx_font_set = _resolve_font_set(target_code)
+                docx_regular_name = "DocxFont"
+                docx_bold_name = "DocxFont-Bold"
+                docx_regular_file = docx_font_set["overlay_regular_file"]
+                docx_bold_file = docx_font_set["overlay_bold_file"]
 
                 cached_pdf_key = book.file_path.replace(".docx", f"_translated_{translation.language_id}.pdf")
                 cached_pdf_path = f"/app/storage/{cached_pdf_key}"
@@ -1783,11 +2035,11 @@ def download_translation(
                         lambda texts: _batch_translate(texts, source_code, target_code)
                     )
 
-                    pdfmetrics.registerFont(TTFont("DejaVu", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
-                    pdfmetrics.registerFont(TTFont("DejaVu-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+                    pdfmetrics.registerFont(TTFont(docx_regular_name, docx_regular_file))
+                    pdfmetrics.registerFont(TTFont(docx_bold_name, docx_bold_file))
 
-                    heading_style = ParagraphStyle("h", fontName="DejaVu-Bold", fontSize=13, spaceAfter=6, leading=16)
-                    body_style = ParagraphStyle("b", fontName="DejaVu", fontSize=10, spaceAfter=4, leading=14)
+                    heading_style = ParagraphStyle("h", fontName=docx_bold_name, fontSize=13, spaceAfter=6, leading=16)
+                    body_style = ParagraphStyle("b", fontName=docx_regular_name, fontSize=10, spaceAfter=4, leading=14)
 
                     doc = Document(_io.BytesIO(translated_docx))
                     buf = _io.BytesIO()
@@ -1880,14 +2132,14 @@ def download_translation(
         from reportlab.pdfbase.ttfonts import TTFont
         import io
 
-        pdfmetrics.registerFont(
-            TTFont("DejaVu", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-        )
-        pdfmetrics.registerFont(
-            TTFont(
-                "DejaVu-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            )
-        )
+        lang = db.query(Language).filter(Language.id == translation.language_id).first()
+        fallback_font_set = _resolve_font_set((lang.libretranslate_code or lang.code) if lang else None)
+        fallback_regular_name = "FallbackFont"
+        fallback_bold_name = "FallbackFont-Bold"
+        fallback_regular_file = fallback_font_set["overlay_regular_file"]
+        fallback_bold_file = fallback_font_set["overlay_bold_file"]
+        pdfmetrics.registerFont(TTFont(fallback_regular_name, fallback_regular_file))
+        pdfmetrics.registerFont(TTFont(fallback_bold_name, fallback_bold_file))
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(
@@ -1901,20 +2153,20 @@ def download_translation(
 
         title_style = ParagraphStyle(
             "CustomTitle",
-            fontName="DejaVu-Bold",
+            fontName=fallback_bold_name,
             fontSize=16,
             spaceAfter=12,
             textColor=colors.black,
         )
         heading_style = ParagraphStyle(
             "CustomHeading",
-            fontName="DejaVu-Bold",
+            fontName=fallback_bold_name,
             fontSize=12,
             spaceAfter=6,
             textColor=colors.darkblue,
         )
         body_style = ParagraphStyle(
-            "CustomBody", fontName="DejaVu", fontSize=10, spaceAfter=6, leading=14
+            "CustomBody", fontName=fallback_regular_name, fontSize=10, spaceAfter=6, leading=14
         )
 
         story = []
