@@ -3,9 +3,9 @@ from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Book, Exam, AnswerKey
+from app.models import Book, BookImage, Exam, AnswerKey
 from app.models.translation import Translation, TranslationJob
-from app.utils.file_utils import save_upload_stream_securely
+from app.utils.file_utils import save_upload_stream_securely, save_image_upload_stream_securely
 from app.utils.security import require_role
 from app.models.user import User
 
@@ -16,6 +16,7 @@ router = APIRouter(prefix="/books", tags=["Books Management"])
 @router.post("/upload")
 async def upload_book(
     file: UploadFile = File(...),
+    images: list[UploadFile] | None = File(None),
     title: str = "",
     subject: str | None = None,
     first_content_page: int = 5,
@@ -54,6 +55,26 @@ async def upload_book(
     db.commit()
     db.refresh(book)
 
+    attached_images = []
+    for image in images or []:
+        if not image or not image.filename:
+            continue
+        try:
+            image_filename, image_mime_type, image_size_bytes, original_filename = await save_image_upload_stream_securely(image)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid image upload: {exc}") from exc
+        book_image = BookImage(
+            book_id=book.id,
+            file_path=image_filename,
+            original_filename=original_filename,
+            mime_type=image_mime_type,
+            file_size_bytes=image_size_bytes,
+        )
+        db.add(book_image)
+        attached_images.append(book_image)
+    if attached_images:
+        db.commit()
+
     if mime_type == "application/pdf":
         from app.tasks.ingestion_tasks import extract_pdf_text
 
@@ -75,6 +96,15 @@ async def upload_book(
         "title": book.title,
         "status": "pending",
         "message": message,
+        "image_count": len(attached_images),
+        "images": [
+            {
+                "id": str(img.id),
+                "original_filename": img.original_filename,
+                "mime_type": img.mime_type,
+            }
+            for img in attached_images
+        ],
     }
 
 
@@ -101,6 +131,7 @@ def list_books(
                 "subject": b.subject,
                 "page_count": b.page_count,
                 "content_type": "book",
+                "image_count": len(getattr(b, "images", []) or []),
                 "extraction_status": b.extraction_status,
                 "created_at": b.created_at.isoformat() if b.created_at else None,
             }
@@ -151,3 +182,47 @@ def delete_book(
     db.commit()
 
     return {"message": "Book deleted"}
+
+
+@router.post("/{book_id}/images")
+async def upload_book_images(
+    book_id: str,
+    images: list[UploadFile] = File(...),
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    book = db.query(Book).filter(Book.id == book_id).first()
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    created = []
+    for image in images:
+        if not image.filename:
+            continue
+        try:
+            image_filename, image_mime_type, image_size_bytes, original_filename = await save_image_upload_stream_securely(image)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid image upload: {exc}") from exc
+        book_image = BookImage(
+            book_id=book.id,
+            file_path=image_filename,
+            original_filename=original_filename,
+            mime_type=image_mime_type,
+            file_size_bytes=image_size_bytes,
+        )
+        db.add(book_image)
+        created.append(book_image)
+    db.commit()
+
+    return {
+        "book_id": str(book.id),
+        "image_count": len(created),
+        "images": [
+            {
+                "id": str(img.id),
+                "original_filename": img.original_filename,
+                "mime_type": img.mime_type,
+            }
+            for img in created
+        ],
+    }

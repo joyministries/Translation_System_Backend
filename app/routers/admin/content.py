@@ -45,6 +45,7 @@ def list_all_content(
                     "subject": b.subject,
                     "page_count": b.page_count,
                     "content_type": "book",
+                    "image_count": len(getattr(b, "images", []) or []),
                     "extraction_status": b.extraction_status,
                     "created_at": b.created_at.isoformat() if b.created_at else None,
                 }
@@ -160,6 +161,7 @@ def list_books(
                 "subject": b.subject,
                 "page_count": b.page_count,
                 "content_type": "book",
+                "image_count": len(getattr(b, "images", []) or []),
             }
             for b in books
         ],
@@ -191,6 +193,16 @@ def get_book(
         "grade_level": book.grade_level,
         "page_count": book.page_count,
         "extraction_status": book.extraction_status,
+        "image_count": len(getattr(book, "images", []) or []),
+        "images": [
+            {
+                "id": str(img.id),
+                "original_filename": img.original_filename,
+                "mime_type": img.mime_type,
+                "file_size_bytes": img.file_size_bytes,
+            }
+            for img in getattr(book, "images", [])
+        ],
         "content_type": "book",
         "institution": {"name": institution.name} if institution else None,
     }

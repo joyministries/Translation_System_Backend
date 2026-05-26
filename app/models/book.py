@@ -49,3 +49,6 @@ class Book(Base, UUIDMixin, TimestampMixin):
     )
     uploader: Mapped["User"] = relationship("User", back_populates="uploaded_books")
     exams: Mapped[list["Exam"]] = relationship("Exam", back_populates="book")
+    images: Mapped[list["BookImage"]] = relationship(
+        "BookImage", back_populates="book", cascade="all, delete-orphan"
+    )

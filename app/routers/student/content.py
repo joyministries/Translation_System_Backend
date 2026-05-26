@@ -59,6 +59,7 @@ def list_books(
                 "title": b.title,
                 "subject": b.subject,
                 "page_count": b.page_count,
+                "image_count": len(getattr(b, "images", []) or []),
             }
             for b in books
         ],
@@ -92,6 +93,16 @@ def get_book(
         "grade_level": book.grade_level,
         "page_count": book.page_count,
         "extraction_status": book.extraction_status,
+        "image_count": len(getattr(book, "images", []) or []),
+        "images": [
+            {
+                "id": str(img.id),
+                "original_filename": img.original_filename,
+                "mime_type": img.mime_type,
+                "file_size_bytes": img.file_size_bytes,
+            }
+            for img in getattr(book, "images", [])
+        ],
     }
 
 

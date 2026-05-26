@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import engine, Base
+from app.models.book_image import BookImage
 
 from app.routers import admin, student, auth
 from fastapi import APIRouter
@@ -14,6 +15,19 @@ Base.metadata.create_all(bind=engine)
 try:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS book_images (
+                id UUID PRIMARY KEY,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW() NOT NULL,
+                updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW() NOT NULL,
+                book_id UUID NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                file_path VARCHAR(1000) NOT NULL,
+                original_filename VARCHAR(500) NOT NULL,
+                mime_type VARCHAR(100) NOT NULL,
+                file_size_bytes BIGINT NOT NULL
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_book_images_book_id ON book_images (book_id)"))
 except Exception:
     pass
 

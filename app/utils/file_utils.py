@@ -14,6 +14,52 @@ ALLOWED_MIME_TYPES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
 }
 
+IMAGE_ALLOWED_MIME_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+
+def validate_image_mime_type(file_bytes: bytes, filename: str = "") -> str | None:
+    mime = magic.from_buffer(file_bytes[:2048], mime=True)
+    if mime in IMAGE_ALLOWED_MIME_TYPES:
+        return mime
+    return None
+
+
+async def save_image_upload_stream_securely(
+    upload: UploadFile, chunk_size: int = 1024 * 1024
+) -> tuple[str, str, int, str]:
+    header = await upload.read(4096)
+    if not header:
+        raise ValueError("Empty file")
+
+    mime_type = validate_image_mime_type(header, upload.filename or "")
+    if not mime_type:
+        raise ValueError("Invalid image type")
+
+    extension = IMAGE_ALLOWED_MIME_TYPES[mime_type]
+    filename = f"{uuid.uuid4()}{extension}"
+    storage_path = os.path.join(settings.STORAGE_ROOT, filename)
+    os.makedirs(settings.STORAGE_ROOT, exist_ok=True)
+
+    total_size = 0
+    with open(storage_path, "wb") as f:
+        f.write(header)
+        total_size += len(header)
+
+        while True:
+            chunk = await upload.read(chunk_size)
+            if not chunk:
+                break
+            f.write(chunk)
+            total_size += len(chunk)
+
+    original_filename = os.path.basename(upload.filename or filename)
+    return filename, mime_type, total_size, original_filename
+
 
 def validate_mime_type(file_bytes: bytes, filename: str = "") -> str | None:
     mime = magic.from_buffer(file_bytes[:2048], mime=True)
