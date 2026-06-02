@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, Query
 from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
@@ -17,9 +17,9 @@ router = APIRouter(prefix="/books", tags=["Books Management"])
 async def upload_book(
     file: UploadFile = File(...),
     images: list[UploadFile] | None = File(None),
-    title: str = "",
-    subject: str | None = None,
-    first_content_page: int = 5,
+    title: str = Form(""),
+    subject: str | None = Form(None),
+    first_content_page: int = Form(1),
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):

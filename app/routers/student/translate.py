@@ -490,7 +490,7 @@ def download_translation(
                         content = f.read()
                 elif translation.translated_text:
                     from reportlab.lib.pagesizes import A4
-                    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
+                    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle, KeepTogether, Image as RLImage
                     from reportlab.lib.styles import ParagraphStyle
                     from reportlab.lib.units import inch
                     from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
@@ -617,6 +617,49 @@ def download_translation(
                             .replace("»", '"')
                         )
 
+                    def _split_inline_url_references(text: str):
+                        if not text or not _re.search(r'https?://|www\.', text):
+                            return text, []
+                        # Pull footnote/reference URLs out of prose so each renders on its own line.
+                        pattern = r'(?<!\w)(?:\d{1,3}\s*)?(?:https?://\S+|www\.\S+)'
+                        matches = list(_re.finditer(pattern, text))
+                        if not matches:
+                            return text, []
+                        body_text = text[:matches[0].start()].strip()
+                        references = []
+                        prose_after_refs = []
+                        for idx, match in enumerate(matches):
+                            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+                            segment = text[match.start():end].strip()
+                            page_end = _re.search(r'\b(?:ikhasi|page|p\.)\s*\d+\.?', segment, _re.IGNORECASE)
+                            if page_end:
+                                ref = segment[:page_end.end()].strip()
+                                tail = segment[page_end.end():].strip()
+                                if tail:
+                                    prose_after_refs.append(tail)
+                            else:
+                                split_tail = _re.search(r'(?<=[\w/)])\.\s+(?=[A-ZÀ-ÖØ-ÞA-Z][a-zÀ-öø-ÿ])', segment)
+                                if split_tail:
+                                    ref = segment[:split_tail.start()+1].strip()
+                                    tail = segment[split_tail.end():].strip()
+                                    if tail:
+                                        prose_after_refs.append(tail)
+                                else:
+                                    ref = segment
+                            ref = _re.sub(r'^(\d{1,3})\s*(https?://|www\.)', r'\1 \2', ref)
+                            references.append(ref)
+                        if prose_after_refs:
+                            body_text = f"{body_text} {' '.join(prose_after_refs)}".strip()
+                        return body_text, references
+
+                    def _append_reference_flowables(references):
+                        if not references:
+                            return
+                        _append_flowable(Spacer(1, 0.04*inch))
+                        for ref_text in references:
+                            safe_ref = _normalize_render_quotes(ref_text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                            _append_flowable(Paragraph(safe_ref, reference_style))
+
                     body_start_page_idx = _find_body_start_page_index()
                     front_matter_end_idx = max(0, min(body_start_page_idx - 1, last_page - 1))
 
@@ -656,7 +699,7 @@ def download_translation(
                     _cover_line_count = len([ln for ln in orig_doc[0].get_text("text", sort=True).splitlines() if ln.strip()]) if len(orig_doc) else 0
                     _title_page_line_count = len([ln for ln in orig_doc[1].get_text("text", sort=True).splitlines() if ln.strip()]) if len(orig_doc) > 1 else 0
                     _front_translation_cursor = 0
-                    _cached_front_matter_available = any(_re.match(r"^(EXAMINATION|UKUHLOLWA|EKSAMEN|KUONGORORA|EXAMEN|ÉPREUVE)\b", ln, _re.IGNORECASE) for ln in _stored_translated_lines[:90])
+                    _cached_front_matter_available = bool(_stored_translated_lines)
 
                     def _next_front_translated_line(fallback=""):
                         nonlocal _front_translation_cursor
@@ -670,9 +713,8 @@ def download_translation(
                         clean_texts = [t for t in texts if (t or "").strip()]
                         if not clean_texts:
                             return []
-                        if _cached_front_matter_available:
-                            return [_normalize_render_quotes(_next_front_translated_line(t)) for t in clean_texts]
-                        return [_normalize_render_quotes(t) for t in _batch_translate(clean_texts, source_code, target_code)]
+                        # Download must render only. It must not depend on a live translation API.
+                        return [_normalize_render_quotes(_next_front_translated_line(t)) for t in clean_texts]
 
                     def _extract_text_blocks(page, split_paragraphs: bool = False, aggressive_merge: bool = True):
                         extracted_blocks = []
@@ -965,9 +1007,13 @@ def download_translation(
 
                     # --- Translate front matter in-place using overlay method ---
                     for page_num in range(front_matter_end_idx + 1):
+                        # Workbook front matter is rebuilt from stored translated text below.
+                        # Do not mutate original pages here, because cover/title pages are preserved exactly.
+                        if workbook_like:
+                            continue
                         page = orig_doc[page_num]
-                        if page_num == 0 and not workbook_like:
-                            continue  # keep cover as-is only for non-workbook PDFs
+                        if page_num == 0:
+                            continue  # keep uploaded cover exactly as-is
 
                         # Page 2 (index 1): translate span-by-span preserving exact position/size/color
                         if page_num == 1 and not workbook_like:
@@ -1093,7 +1139,7 @@ def download_translation(
                                         return True
                                     if _re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+\d+\s*[:\-–]?\s*\D', candidate, _re.IGNORECASE):
                                         return True
-                                    if _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]?\s*\D', candidate, _re.IGNORECASE):
+                                    if _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?\s*\D', candidate, _re.IGNORECASE):
                                         return True
                                     return any(
                                         candidate.upper().startswith(marker)
@@ -1399,17 +1445,18 @@ def download_translation(
                                         overlay=True,
                                     )
                     # --- Build body from stored translation using original PDF line styles ---
-                    heading_style = ParagraphStyle("H", fontName=reportlab_bold_name, fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=1)
-                    chapter_heading_style = ParagraphStyle("HC", fontName=reportlab_bold_name, fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=1)
-                    intro_title_style = ParagraphStyle("IT", fontName=reportlab_bold_name, fontSize=16, spaceBefore=6, spaceAfter=8, leading=20, alignment=1)
-                    subhead_style = ParagraphStyle("SH", fontName=reportlab_bold_name, fontSize=11, spaceBefore=8, spaceAfter=2, leading=14, alignment=TA_LEFT)
-                    toc_line_style = ParagraphStyle("TOC", fontName=reportlab_regular_name, fontSize=12, spaceBefore=0, spaceAfter=8, leading=18, alignment=TA_LEFT)
-                    body_style = ParagraphStyle("B", fontName=reportlab_regular_name, fontSize=11, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_LEFT)
-                    body_style_bold = ParagraphStyle("BB", fontName=reportlab_bold_name, fontSize=11, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_LEFT)
-                    table_cell_style = ParagraphStyle("TC", fontName=reportlab_regular_name, fontSize=9.5, spaceBefore=0, spaceAfter=0, leading=12, alignment=TA_LEFT)
-                    table_header_style = ParagraphStyle("TH", fontName=reportlab_bold_name, fontSize=9.5, spaceBefore=0, spaceAfter=0, leading=12, alignment=TA_LEFT)
+                    heading_style = ParagraphStyle("H", fontName=reportlab_bold_name, fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=1, keepWithNext=1, splitLongWords=0)
+                    chapter_heading_style = ParagraphStyle("HC", fontName=reportlab_bold_name, fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=1, keepWithNext=1, splitLongWords=0)
+                    intro_title_style = ParagraphStyle("IT", fontName=reportlab_bold_name, fontSize=16, spaceBefore=6, spaceAfter=8, leading=20, alignment=1, keepWithNext=1, splitLongWords=0)
+                    subhead_style = ParagraphStyle("SH", fontName=reportlab_bold_name, fontSize=11, spaceBefore=8, spaceAfter=2, leading=14, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
+                    toc_line_style = ParagraphStyle("TOC", fontName=reportlab_regular_name, fontSize=12, spaceBefore=0, spaceAfter=8, leading=18, alignment=TA_LEFT, splitLongWords=0)
+                    body_style = ParagraphStyle("B", fontName=reportlab_regular_name, fontSize=11, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_LEFT, splitLongWords=0)
+                    body_style_bold = ParagraphStyle("BB", fontName=reportlab_bold_name, fontSize=11, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_LEFT, splitLongWords=0)
+                    reference_style = ParagraphStyle("REF", fontName=reportlab_regular_name, fontSize=8, spaceBefore=1, spaceAfter=1, leading=10, alignment=TA_LEFT, wordWrap="CJK")
+                    table_cell_style = ParagraphStyle("TC", fontName=reportlab_regular_name, fontSize=9.5, spaceBefore=0, spaceAfter=0, leading=12, alignment=TA_LEFT, splitLongWords=0)
+                    table_header_style = ParagraphStyle("TH", fontName=reportlab_bold_name, fontSize=9.5, spaceBefore=0, spaceAfter=0, leading=12, alignment=TA_LEFT, splitLongWords=0)
                     indent_style = ParagraphStyle("IND", fontName=reportlab_regular_name, fontSize=11,
-                        leftIndent=20, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_LEFT)
+                        leftIndent=20, spaceBefore=2, spaceAfter=2, leading=15, alignment=TA_LEFT, splitLongWords=0)
 
                     def _new_body_doc(buffer):
                         return SimpleDocTemplate(
@@ -1509,6 +1556,8 @@ def download_translation(
 
                     def _skip_body_record(record):
                         original = record["text"].strip()
+                        if _re.match(r'^(?:[A-Z]{2,}\d{3}|I-[A-Z]{2,}\d{3})\b.+\b\d+\s*$', original, _re.IGNORECASE):
+                            return True
                         if original.startswith("CC101 Christian Foundations"):
                             return True
                         if _re.match(r'^(CC101|BH505)\b', original, _re.IGNORECASE):
@@ -1530,6 +1579,10 @@ def download_translation(
                         upper = value.upper()
                         if _re.fullmatch(r"\d+", value):
                             return True
+                        if _re.match(r'^(?:I[- ]?)?[A-Z]{2,}\d{3}\b.+\b\d+\s*(?:[•*\-])?\s*$', upper):
+                            return True
+                        if _re.match(r'^(?:I[- ]?)?DC210\b.+UKUHLAZIYWA.+\b\d+\s*(?:[•*\-])?\s*$', upper):
+                            return True
                         if "BH505" in upper and _re.search(r"\b\d+\b$", upper):
                             return True
                         if "CC101" in upper and _re.search(r"\b\d+\b$", upper):
@@ -1544,9 +1597,42 @@ def download_translation(
                             return True
                         return False
 
+                    def _strip_translated_footer_prefix(text):
+                        value = (text or "").strip()
+                        if not value:
+                            return value
+                        # Handles merged footer+heading lines like:
+                        # I-DC210 UKUHLAZIYWA KWEZEMVELO 52 KUFANELE...
+                        value = _re.sub(
+                            r'^(?:I[- ]?)?[A-Z]{2,}\d{3}\b\s+[^0-9\n]{6,}?\s+\d{1,4}\s+(?=[A-ZÀ-Þ0-9"“])',
+                            '',
+                            value,
+                            count=1,
+                        ).strip()
+                        value = _re.sub(
+                            r'\s+(?:I[- ]?)?[A-Z]{2,}\d{3}\b\s+[^0-9\n]{6,}?\s+\d{1,4}\s*$',
+                            '',
+                            value,
+                            count=1,
+                        ).strip()
+                        return value
+
                     def _is_bible_reference_chapter_line(text):
                         value = (text or "").strip()
-                        return bool(_re.match(r'^(Isahluko|Izahluko)\s+\d+(?:[-–]\d+)?\s*:', value))
+                        if not value:
+                            return False
+                        marker_re = r'(?:Isahluko|Izahluko|Sura(?:\s+ya)?|Sura|Chapter|Chapters|Hoofstuk|Hoofstukke|Chitsauko|Zvitsauko)'
+                        if not _re.match(rf'^{marker_re}\s+\d+(?:[-–]\d+)?\s*:', value, _re.IGNORECASE):
+                            return False
+                        # Workbooks such as DC210/BG302 use dash-style real chapter headings in the TOC.
+                        # In those books, colon-style chapter lines inside the body are Bible/scripture references.
+                        try:
+                            allows_colon_chapters = _body_allows_colon_chapter_headings_runtime
+                        except NameError:
+                            allows_colon_chapters = False
+                        if not allows_colon_chapters:
+                            return True
+                        return False
 
                     def _starts_new_body_block(text):
                         value = (text or "").strip()
@@ -1554,7 +1640,7 @@ def download_translation(
                             return False
                         if not value:
                             return False
-                        if _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]\s+\D', value, _re.IGNORECASE):
+                        if _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]\s+\D', value, _re.IGNORECASE):
                             return True
                         if _re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*[:\-–]\s+\D', value, _re.IGNORECASE):
                             return True
@@ -1572,10 +1658,36 @@ def download_translation(
                         value = (text or "").strip()
                         return len(value) <= 24 and bool(_re.fullmatch(r'\([^)]+\)', value))
 
+                    def _is_form_or_checklist_line(text):
+                        value = (text or "").strip()
+                        if not value:
+                            return False
+                        if value.startswith("_____") or "_____" in value:
+                            return True
+                        if _re.match(r'^[-–—]\s*\S+', value):
+                            return True
+                        if _re.match(r'^[a-zA-Z]\.\s+\S+', value):
+                            return True
+                        if _re.match(r'^[a-zA-Z]\)\s+\S+', value):
+                            return True
+                        return False
+
                     def _should_join_with_previous(prev_text, current_text):
                         prev = (prev_text or "").strip()
                         curr = (current_text or "").strip()
                         if not prev or not curr:
+                            return False
+                        if _is_form_or_checklist_line(curr) or _is_form_or_checklist_line(prev):
+                            # Lettered workbook prompts often wrap across source lines;
+                            # keep their continuation with the prompt. Blank/checklist
+                            # lines must remain separate.
+                            if (
+                                _re.match(r'^[a-zA-Z]\.\s+\S+', prev)
+                                and not _is_form_or_checklist_line(curr)
+                                and not _starts_new_body_block(curr)
+                                and not _re.search(r'[.!?]\s*$', prev)
+                            ):
+                                return True
                             return False
                         if _is_parenthetical_tail(curr):
                             return True
@@ -1653,6 +1765,8 @@ def download_translation(
                             return False
                         if _starts_new_body_block(value):
                             return True
+                        if _is_form_or_checklist_line(value):
+                            return True
                         if _is_toc_like_line(value) or _is_toc_heading_like_line(value):
                             return True
                         if _re.match(r'^\d+:\d+', value):
@@ -1712,7 +1826,7 @@ def download_translation(
                             return True
                         if _re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*[:\-–]\s+\D', candidate, _re.IGNORECASE):
                             return True
-                        if _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]?\s*\D', candidate, _re.IGNORECASE):
+                        if _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?\s*\D', candidate, _re.IGNORECASE):
                             return True
                         return any(
                             candidate.upper().startswith(marker)
@@ -1737,7 +1851,7 @@ def download_translation(
                         # Some workbook translations store multiple TOC entries in one long line.
                         # Split them back out at known entry markers and then trim each segment.
                         marker_re = _re.compile(
-                            r'(?=(?:CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO(?:\s+[^-–]{1,40})?|HOOFSTUK|ÌSỌRÍ|SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|CONCLUSION|APPENDIX|BIBLIOGRAPHY|MHEDZISO|MABHUKU EMABHUKU|ISINGENISO(?:\s+SENKQUBO|\s+SESIFUNDO)?|ISANDULELO|OKUQUKETHWE|PREFACE)\b)',
+                            r'(?=(?:CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO(?:\s+[^-–]{1,40})?|HOOFSTUK|ÌSỌRÍ|SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING|CONCLUSION|APPENDIX|BIBLIOGRAPHY|MHEDZISO|MABHUKU EMABHUKU|ISINGENISO(?:\s+SENKQUBO|\s+SESIFUNDO)?|ISANDULELO|OKUQUKETHWE|PREFACE)\b)',
                             _re.IGNORECASE,
                         )
                         starts = sorted(set(match.start() for match in marker_re.finditer(cleaned)))
@@ -1769,7 +1883,7 @@ def download_translation(
                             return True
                         if _re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*[:\-–]\s+\D', candidate, _re.IGNORECASE):
                             return True
-                        if _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]?\s*\D', candidate, _re.IGNORECASE):
+                        if _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?\s*\D', candidate, _re.IGNORECASE):
                             return True
                         return any(
                             candidate.upper().startswith(marker)
@@ -1799,6 +1913,42 @@ def download_translation(
                                 entries.append(normalized)
                         return entries
 
+                    def _derive_body_toc_entries(lines, allow_colon_chapters=False, limit=0):
+                        entries = []
+                        seen = set()
+                        seen_chapter_or_section = False
+                        chapter_dash_re = _re.compile(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*[-–]\s+\D', _re.IGNORECASE)
+                        chapter_colon_re = _re.compile(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*:\s+\D', _re.IGNORECASE)
+                        section_re = _re.compile(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?\s*\D', _re.IGNORECASE)
+                        terminal_markers = ('CONCLUSION', 'APPENDIX', 'BIBLIOGRAPHY', 'MHEDZISO', 'MABHUKU EMABHUKU', 'ISITHASISELO', 'PREFACE', 'ISANDULELO')
+                        for raw in lines:
+                            candidate = (raw or '').strip()
+                            if not candidate:
+                                continue
+                            for part in _explode_toc_entry_text(candidate):
+                                normalized = _clean_toc_entry_text(part)
+                                if not normalized or _is_toc_heading_like_line(normalized):
+                                    continue
+                                upper = normalized.upper()
+                                starts_like_heading = bool(normalized[:1].isupper())
+                                first_token = (normalized.split() or [''])[0]
+                                section_marker_is_heading = first_token.isupper()
+                                is_intro = bool(introduction_pattern.match(normalized)) and not seen_chapter_or_section
+                                is_section = starts_like_heading and section_marker_is_heading and bool(section_re.match(normalized))
+                                is_chapter = starts_like_heading and (bool(chapter_dash_re.match(normalized)) or (allow_colon_chapters and bool(chapter_colon_re.match(normalized))))
+                                is_major = is_intro or is_section or is_chapter or any(upper.startswith(marker) for marker in terminal_markers)
+                                if not is_major:
+                                    continue
+                                if upper in seen:
+                                    continue
+                                seen.add(upper)
+                                entries.append(normalized)
+                                if is_section or is_chapter:
+                                    seen_chapter_or_section = True
+                                if limit and len(entries) >= limit:
+                                    return entries
+                        return entries
+
                     def _is_body_start_heading(value):
                         candidate = (value or '').strip()
                         if not candidate:
@@ -1806,7 +1956,7 @@ def download_translation(
                         return bool(
                             introduction_pattern.match(candidate)
                             or chapter_1_pattern.match(candidate)
-                            or _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]?', candidate, _re.IGNORECASE)
+                            or _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?', candidate, _re.IGNORECASE)
                         )
 
                     raw_lines = all_translated_lines
@@ -1876,7 +2026,7 @@ def download_translation(
                                 is_workbook_body_heading = bool(
                                     introduction_pattern.match(candidate)
                                     or chapter_1_pattern.match(candidate)
-                                    or _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]?', candidate, _re.IGNORECASE)
+                                    or _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?', candidate, _re.IGNORECASE)
                                 )
                                 if is_workbook_body_heading and not _is_toc_like_line(candidate):
                                     workbook_body_start_index = idx
@@ -1900,37 +2050,181 @@ def download_translation(
                                 if not body_heading_after_toc and (
                                     _is_body_start_heading(first_body_candidate)
                                     or chapter_1_pattern.match(first_body_candidate)
-                                    or _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]?', first_body_candidate, _re.IGNORECASE)
+                                    or _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?', first_body_candidate, _re.IGNORECASE)
                                 ):
                                     body_heading_after_toc = _clean_toc_entry_text(first_body_candidate) or first_body_candidate
-                        front_start_index = _cover_line_count
+                        def _raw_index_after_nonempty(lines, count):
+                            seen = 0
+                            for _idx, _line in enumerate(lines):
+                                if (_line or "").strip():
+                                    seen += 1
+                                    if seen >= count:
+                                        return _idx + 1
+                            return min(len(lines), count)
+
+                        front_start_index = _raw_index_after_nonempty(raw_lines, _cover_line_count)
                         if _cached_front_matter_available:
-                            for _idx, _line in enumerate(raw_lines[:body_start_index]):
+                            for _idx, _line in enumerate(raw_lines[front_start_index:body_start_index], front_start_index):
                                 _upper_line = (_line or "").strip().upper()
-                                if _idx > 0 and any(_m in _upper_line for _m in ("TEAM IMPACT", "IYUNIVESITHI", "YUNIVHESITI", "UNIVERSITY")):
+                                if any(_m in _upper_line for _m in ("TEAM IMPACT", "IYUNIVESITHI", "YUNIVHESITI", "UNIVERSITY")):
                                     front_start_index = _idx
                                     break
-                        cover_lines = raw_lines[:front_start_index]
+                        # Keep workbook cover page exactly as the uploaded PDF.
+                        # Front-matter translation starts after the cover.
+                        cover_lines = []
                         title_page_lines = []
                         front_lines = raw_lines[front_start_index:body_start_index]
                         exam_idx = next((i for i, line in enumerate(front_lines) if _exam_heading_like_line(line)), None)
                         toc_rel_idx = next((i for i, line in enumerate(front_lines) if _is_toc_heading_like_line(line)), None)
                         manual_lines = front_lines[:exam_idx] if exam_idx is not None else []
-                        while manual_lines and _course_title_like_line(manual_lines[0]):
-                            manual_lines = manual_lines[1:]
+                        leading_title_lines = []
+                        while manual_lines:
+                            first_manual = (manual_lines[0] or "").strip()
+                            if _course_title_like_line(first_manual) or (len(first_manual) <= 90 and _re.search(r"\b(?:BH|BG|DC|CC)\d{3}\b|\b(?:Moses|Mose|uMose)\b", first_manual, _re.IGNORECASE)):
+                                leading_title_lines.append(manual_lines.pop(0))
+                                continue
+                            break
+                        if leading_title_lines:
+                            title_page_lines = leading_title_lines + title_page_lines
                         exam_lines = front_lines[exam_idx:toc_rel_idx] if (exam_idx is not None and toc_rel_idx is not None) else (front_lines[exam_idx:] if exam_idx is not None else [])
+                        # Drop title/footer fragments that PDF extraction can place after the exam page and before TOC.
+                        while exam_lines:
+                            last_exam = (exam_lines[-1] or "").strip()
+                            if not last_exam:
+                                exam_lines.pop()
+                                continue
+                            if len(last_exam) <= 90 and (_course_title_like_line(last_exam) or _re.search(r"\b(?:BH|BG|DC|CC)\d{3}\b|\b(?:Moses|Mose)\b", last_exam, _re.IGNORECASE) or "umose" in last_exam.lower()):
+                                exam_lines.pop()
+                                continue
+                            break
                         if exam_lines:
                             _title_split_idx = next((i for i, line in enumerate(exam_lines[1:], 1) if _course_title_like_line(line) or _re.search(r"\b(BH|BG|DC|CC)\d{3}\b", line or "", _re.IGNORECASE)), None)
                             if _title_split_idx is not None:
                                 title_page_lines = exam_lines[_title_split_idx:]
                                 exam_lines = exam_lines[:_title_split_idx]
+                        # Generic workbook front-matter slot mapping.
+                        # Use original PDF page roles/counts, not translated keywords, so all languages follow one path.
+                        _slot_body_start_index = None
+                        _slot_title_lines = []
+                        _slot_manual_lines = []
+                        _slot_exam_lines = []
+                        _slot_toc_lines = []
+
+                        def _orig_nonempty_count(_page_idx):
+                            if _page_idx < 0 or _page_idx >= len(orig_doc):
+                                return 0
+                            return len([_ln for _ln in orig_doc[_page_idx].get_text("text", sort=True).splitlines() if _ln.strip()])
+
+                        def _orig_page_text_upper(_page_idx):
+                            if _page_idx < 0 or _page_idx >= len(orig_doc):
+                                return ""
+                            return orig_doc[_page_idx].get_text("text", sort=True).upper()
+
+                        if _stored_translated_lines:
+                            _course_code_from_original = ""
+                            if len(orig_doc) > 1:
+                                _p1_joined_for_code = " ".join([ln.strip() for ln in orig_doc[1].get_text("text", sort=True).splitlines() if ln.strip()])
+                                _code_match = _re.search(r"\b(?:BH|BG|DC|CC)\d{3}\b", _p1_joined_for_code, _re.IGNORECASE)
+                                _course_code_from_original = _code_match.group(0).upper() if _code_match else ""
+
+                            _title_idx = 1 if len(_stored_translated_lines) > 1 else None
+                            if _course_code_from_original:
+                                _title_idx = next((i for i, ln in enumerate(_stored_translated_lines[:12]) if _course_code_from_original in (ln or '').upper()), _title_idx)
+
+                            _email_idx = next((i for i, ln in enumerate(_stored_translated_lines) if "dean@tiuniversity.com" in (ln or '').lower()), None)
+                            _dot_idx = next((i for i, ln in enumerate(_stored_translated_lines) if i > ((_email_idx or 0) + 1) and _re.search(r'\.{5,}|…{2,}', ln or '')), None)
+
+                            if _title_idx is not None and _email_idx is not None and _dot_idx is not None:
+                                _exam_candidates = []
+                                for _i in range(max((_title_idx or 0) + 1, _email_idx - 14), _email_idx + 1):
+                                    _line = (_stored_translated_lines[_i] or '').strip()
+                                    if not _line or "@" in _line or len(_line) > 90:
+                                        continue
+                                    if _re.search(r'[.!?]$', _line):
+                                        continue
+                                    if _re.search(r'©|copyright|hakimiliki|kopiereg|haki zote|regte voorbehou|reserved', _line, _re.IGNORECASE):
+                                        continue
+                                    _exam_candidates.append(_i)
+                                _exam_start_idx = _exam_candidates[-1] if _exam_candidates else max((_title_idx or 0) + 1, _email_idx - 6)
+
+                                _toc_start_idx = _dot_idx
+                                _prev = (_stored_translated_lines[_dot_idx - 1] or '').strip() if _dot_idx > 0 else ""
+                                if _prev and len(_prev) <= 90 and not _re.search(r'[.!?]$', _prev) and "@" not in _prev:
+                                    _toc_start_idx = _dot_idx - 1
+
+                                _toc_end_idx = _dot_idx + 1
+                                while _toc_end_idx < len(_stored_translated_lines):
+                                    _line = (_stored_translated_lines[_toc_end_idx] or '').strip()
+                                    if not _line:
+                                        _toc_end_idx += 1
+                                        continue
+                                    if _re.search(r'\.{5,}|…{2,}', _line):
+                                        _toc_end_idx += 1
+                                        continue
+                                    # Some translators split a TOC entry from its dot-leader/page-number line.
+                                    _next = (_stored_translated_lines[_toc_end_idx + 1] or '').strip() if _toc_end_idx + 1 < len(_stored_translated_lines) else ""
+                                    if len(_line) <= 130 and _next and _re.search(r'\.{5,}|…{2,}', _next):
+                                        _toc_end_idx += 1
+                                        continue
+                                    break
+
+                                _slot_title_lines = _stored_translated_lines[_title_idx:_title_idx + 1]
+                                _slot_manual_lines = _stored_translated_lines[_title_idx + 1:_exam_start_idx]
+                                _slot_exam_lines = _stored_translated_lines[_exam_start_idx:_toc_start_idx]
+                                _slot_toc_lines = _stored_translated_lines[_toc_start_idx:_toc_end_idx]
+                                _slot_body_start_index = _toc_end_idx
+
+                        if _slot_body_start_index is None and _stored_translated_lines and len(orig_doc) >= 5:
+                            _title_only_idx = None
+                            if len(orig_doc) > 1:
+                                _p1_lines_for_slot = [ln.strip() for ln in orig_doc[1].get_text("text", sort=True).splitlines() if ln.strip()]
+                                _p1_joined_for_slot = " ".join(_p1_lines_for_slot)
+                                if _p1_lines_for_slot and len(_p1_lines_for_slot) <= 3 and len(_p1_joined_for_slot) <= 120 and not _re.search(r"HOW TO USE|EXAMINATION|TABLE OF CONTENTS", _p1_joined_for_slot, _re.IGNORECASE):
+                                    _title_only_idx = 1
+
+                            _search_start = 2 if _title_only_idx == 1 else 1
+                            _exam_page_idx = next((i for i in range(_search_start, min(10, len(orig_doc))) if "EXAMINATION" in _orig_page_text_upper(i)), None)
+                            _toc_page_idx = next((i for i in range(_search_start, min(12, len(orig_doc))) if "TABLE OF CONTENTS" in _orig_page_text_upper(i)), None)
+                            if _exam_page_idx is not None and _toc_page_idx is not None and _exam_page_idx < _toc_page_idx:
+                                _slot_cursor = _orig_nonempty_count(0)
+                                if _title_only_idx is not None:
+                                    _title_count = _orig_nonempty_count(_title_only_idx)
+                                    _slot_title_lines = _stored_translated_lines[_slot_cursor:_slot_cursor + _title_count]
+                                    _slot_cursor += _title_count
+                                _manual_start = _search_start
+                                _manual_count = sum(_orig_nonempty_count(i) for i in range(_manual_start, _exam_page_idx))
+                                _slot_manual_lines = _stored_translated_lines[_slot_cursor:_slot_cursor + _manual_count]
+                                _slot_cursor += _manual_count
+                                _exam_count = sum(_orig_nonempty_count(i) for i in range(_exam_page_idx, _toc_page_idx))
+                                _slot_exam_lines = _stored_translated_lines[_slot_cursor:_slot_cursor + _exam_count]
+                                _slot_cursor += _exam_count
+                                _toc_count = _orig_nonempty_count(_toc_page_idx)
+                                _slot_toc_lines = _stored_translated_lines[_slot_cursor:_slot_cursor + _toc_count]
+                                _slot_cursor += _toc_count
+                                _slot_body_start_index = _slot_cursor
+
                         raw_toc_lines = raw_lines[toc_heading_index + 1:body_start_index] if (toc_heading_index is not None and body_start_index > toc_heading_index) else []
+                        _slot_mapping_active = _slot_body_start_index is not None
+                        if _slot_mapping_active:
+                            title_page_lines = _slot_title_lines
+                            manual_lines = _slot_manual_lines
+                            exam_lines = _slot_exam_lines
+                            raw_toc_lines = _slot_toc_lines
+                            raw_lines = _stored_translated_lines
+                            body_start_index = _slot_body_start_index
+                            if raw_toc_lines:
+                                _slot_toc_set = {(_ln or '').strip() for _ln in raw_toc_lines if (_ln or '').strip()}
+                                exam_lines = [
+                                    _ln for _ln in exam_lines
+                                    if (_ln or '').strip() not in _slot_toc_set and not _re.search(r'\.{5,}', _ln or '')
+                                ]
+                            _log.getLogger(__name__).warning(f'workbook slot map title={title_page_lines[:2]!r} manual_count={len(manual_lines)} exam_count={len(exam_lines)} toc_count={len(raw_toc_lines)} body_start={body_start_index}')
                         if raw_toc_lines and not body_heading_after_toc:
                             for raw_line in raw_toc_lines:
                                 candidate = _clean_toc_entry_text(raw_line)
                                 if not candidate:
                                     continue
-                                if _is_body_start_heading(candidate) or chapter_1_pattern.match(candidate) or _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]?', candidate, _re.IGNORECASE):
+                                if _is_body_start_heading(candidate) or chapter_1_pattern.match(candidate) or _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?', candidate, _re.IGNORECASE):
                                     body_heading_after_toc = candidate
                                     if introduction_pattern.match(candidate):
                                         intro_heading_after_toc = candidate
@@ -1951,13 +2245,13 @@ def download_translation(
                             cleaned_line = _clean_toc_entry_text(toc_line)
                             if not cleaned_line:
                                 continue
-                            if body_heading_after_toc and cleaned_line.upper().startswith(body_heading_after_toc.upper()):
+                            if body_heading_after_toc and cleaned_line.upper().startswith(body_heading_after_toc.upper()) and not _slot_mapping_active:
                                 break
                             for part in _explode_toc_entry_text(cleaned_line):
                                 normalized = _clean_toc_entry_text(part)
                                 if not normalized:
                                     continue
-                                if body_heading_after_toc and normalized.upper().startswith(body_heading_after_toc.upper()):
+                                if body_heading_after_toc and normalized.upper().startswith(body_heading_after_toc.upper()) and not _slot_mapping_active:
                                     break
                                 if toc_title_text and normalized.upper() == toc_title_text.upper():
                                     continue
@@ -1968,6 +2262,87 @@ def download_translation(
                                     continue
                                 seen_toc_entries.add(key)
                                 toc_entries.append(normalized)
+                        if _slot_body_start_index is not None and raw_toc_lines and not toc_entries:
+                            _fallback_toc = []
+                            _seen_fallback_toc = set()
+                            for _toc_line in raw_toc_lines:
+                                _clean = _clean_toc_entry_text(_toc_line)
+                                if not _clean:
+                                    continue
+                                if toc_title_text and _clean.upper() == toc_title_text.upper():
+                                    continue
+                                _clean = _re.sub(r'\s*\.{3,}\s*\d+\s*$', '', _clean).strip()
+                                _clean = _re.sub(r'\s+\d+\s*$', '', _clean).strip()
+                                if not _clean:
+                                    continue
+                                _key = _clean.upper()
+                                if _key in _seen_fallback_toc:
+                                    continue
+                                _seen_fallback_toc.add(_key)
+                                _fallback_toc.append(_clean)
+                            if _fallback_toc:
+                                toc_entries = _fallback_toc
+                                if not toc_title_text:
+                                    toc_title_text = _clean_toc_entry_text(raw_toc_lines[0]) or 'Table of Contents'
+
+                        def _merge_front_matter_paragraph_lines(lines, *, preserve_first_heading=False):
+                            merged = []
+                            buffer = []
+
+                            def _is_front_heading(value, idx):
+                                candidate = (value or '').strip()
+                                if not candidate:
+                                    return True
+                                if preserve_first_heading and idx == 0 and len(candidate) <= 90:
+                                    return True
+                                if _exam_heading_like_line(candidate) or _is_toc_heading_like_line(candidate):
+                                    return True
+                                if len(candidate) <= 140 and candidate.isupper():
+                                    return True
+                                if _course_title_like_line(candidate):
+                                    return True
+                                return False
+
+                            def _flush():
+                                nonlocal buffer
+                                if buffer:
+                                    merged.append(_re.sub(r'\s+', ' ', ' '.join(buffer)).strip())
+                                    buffer = []
+
+                            def _should_join_front(prev, curr):
+                                prev = (prev or '').strip()
+                                curr = (curr or '').strip()
+                                if not prev or not curr:
+                                    return False
+                                if _is_toc_heading_like_line(curr) or _exam_heading_like_line(curr):
+                                    return False
+                                if curr.isupper() and len(curr) <= 140:
+                                    return False
+                                if _re.search(r'\b(?:and|or|of|to|the|a|an|na|ya|kwa|katika|ili|wa|la|za|van|en|de|du|des)$', prev, _re.IGNORECASE):
+                                    return True
+                                if not _re.search(r'[.!?:;"”)]\s*$', prev):
+                                    return True
+                                if curr[:1].islower():
+                                    return True
+                                return False
+
+                            for idx, raw in enumerate(lines or []):
+                                line = (raw or '').strip()
+                                if not line:
+                                    _flush()
+                                    continue
+                                if _is_front_heading(line, idx):
+                                    _flush()
+                                    merged.append(line)
+                                    continue
+                                if buffer and _should_join_front(buffer[-1], line):
+                                    buffer.append(line)
+                                else:
+                                    _flush()
+                                    buffer.append(line)
+                            _flush()
+                            return merged
+
                         if cover_lines:
                             for _idx, line in enumerate(cover_lines):
                                 safe_line = _normalize_render_quotes(line).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
@@ -1979,6 +2354,7 @@ def download_translation(
                                     workbook_front_story.append(Paragraph(safe_line, ParagraphStyle("COVER_SUB", parent=heading_style, fontSize=16, leading=20, alignment=1)))
                             workbook_front_story.append(PageBreak())
                         if manual_lines:
+                            manual_lines = _merge_front_matter_paragraph_lines(manual_lines, preserve_first_heading=True)
                             workbook_front_story.append(Spacer(1, 0.2*inch))
                             for idx, line in enumerate(manual_lines):
                                 safe_line = _normalize_render_quotes(line).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
@@ -1990,6 +2366,7 @@ def download_translation(
                                     workbook_front_story.append(Paragraph(safe_line, body_style))
                             workbook_front_story.append(PageBreak())
                         if exam_lines:
+                            exam_lines = _merge_front_matter_paragraph_lines(exam_lines, preserve_first_heading=True)
                             for idx, line in enumerate(exam_lines):
                                 safe_line = _normalize_render_quotes(line).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
                                 if idx == 0:
@@ -1999,23 +2376,29 @@ def download_translation(
                                 else:
                                     workbook_front_story.append(Paragraph(safe_line, body_style))
                             workbook_front_story.append(PageBreak())
-                        if title_page_lines:
-                            for idx, line in enumerate(title_page_lines):
-                                safe_line = _normalize_render_quotes(line).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-                                if idx == 0:
-                                    workbook_front_story.append(Spacer(1, 0.35*inch))
-                                    workbook_front_story.append(Paragraph(safe_line, heading_style))
-                                elif line.strip().lower() == "ngu" or line.strip().lower() == "by":
-                                    workbook_front_story.append(Paragraph(safe_line, body_style))
-                                elif line.startswith("©") or len(line) > 120:
-                                    workbook_front_story.append(Paragraph(safe_line, body_style))
-                                else:
-                                    workbook_front_story.append(Paragraph(safe_line, subhead_style if idx < 3 else body_style))
-                            workbook_front_story.append(PageBreak())
+                        # title_page_lines are rendered as the translated title-only page during assembly
+                        # so the workbook cover/title/manual page order remains stable.
                         if len(toc_entries) < 4:
                             fallback_toc_entries = _derive_workbook_toc_entries(raw_toc_lines)
                             if len(fallback_toc_entries) > len(toc_entries):
                                 toc_entries = fallback_toc_entries
+                        # If translation collapsed the TOC, recover entries from translated body headings.
+                        # The original TOC decides whether chapter headings are dash-style or colon-style,
+                        # preventing Bible-reference lines from being promoted into the TOC.
+                        if body_start_index < len(raw_lines):
+                            original_toc_entries = []
+                            for _page_idx in range(0, min(12, len(orig_doc))):
+                                if 'TABLE OF CONTENTS' in _orig_page_text_upper(_page_idx):
+                                    original_toc_entries = _derive_workbook_toc_entries(orig_doc[_page_idx].get_text('text', sort=True).splitlines())
+                                    break
+                            allow_colon_chapters = any(_re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*:', _entry, _re.IGNORECASE) for _entry in original_toc_entries)
+                            body_toc_entries = _derive_body_toc_entries(
+                                raw_lines[body_start_index:],
+                                allow_colon_chapters=allow_colon_chapters,
+                                limit=0,
+                            )
+                            if len(body_toc_entries) > len(toc_entries):
+                                toc_entries = body_toc_entries
                         if toc_entries:
                             intro_heading_after_toc = next(
                                 (entry for entry in toc_entries if introduction_pattern.match(entry)),
@@ -2026,13 +2409,13 @@ def download_translation(
                                     entry for entry in toc_entries
                                     if _is_body_start_heading(entry)
                                     or chapter_1_pattern.match(entry)
-                                    or _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]?', entry, _re.IGNORECASE)
+                                    or _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?', entry, _re.IGNORECASE)
                                 ),
                                 body_heading_after_toc,
                             )
                         intro_title_text = intro_heading_after_toc
                         if toc_entries and toc_title_text:
-                            render_toc_entries = [e for e in toc_entries if not (intro_title_text and e.strip().upper() == intro_title_text.strip().upper()) and not introduction_pattern.match(e)]
+                            render_toc_entries = toc_entries
                             import logging as _log
                             _log.getLogger(__name__).warning(f'workbook front matter intro={intro_heading_after_toc!r} toc_count={len(toc_entries)} title={toc_title_text!r}')
                             title_safe = _normalize_render_quotes(toc_title_text).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
@@ -2046,9 +2429,9 @@ def download_translation(
                             toc_block = "<br/>".join(toc_block_lines)
                             workbook_front_story.append(Paragraph(toc_block, ParagraphStyle("WORKBOOK_TOC_BLOCK", parent=toc_line_style, fontSize=12, leading=18, alignment=TA_LEFT, spaceAfter=0, spaceBefore=0)))
                             workbook_front_cutoff_index = body_start_index
-                    if toc_end_index is not None:
+                    if toc_end_index is not None and not ('_slot_mapping_active' in locals() and _slot_mapping_active):
                         body_start_index = max(body_start_index, toc_end_index)
-                    if workbook_front_cutoff_index is not None:
+                    if workbook_front_cutoff_index is not None and not ('_slot_mapping_active' in locals() and _slot_mapping_active):
                         body_start_index = max(body_start_index, workbook_front_cutoff_index)
                     raw_lines = raw_lines[body_start_index:]
                     first_nonempty_idx = next((i for i, line in enumerate(raw_lines) if (line or '').strip()), None)
@@ -2190,6 +2573,15 @@ def download_translation(
                         if not p:
                             _flush_paragraph_buffer()
                             continue
+                        if p in (":", ";"):
+                            if paragraph_buffer:
+                                paragraph_buffer[-1] = paragraph_buffer[-1].rstrip() + p
+                                _take_source_record()
+                                continue
+                            if translated_records:
+                                translated_records[-1]["text"] = translated_records[-1]["text"].rstrip() + p
+                                _take_source_record()
+                                continue
                         if current_source and current_source.get("table_like"):
                             _flush_paragraph_buffer()
                             source_record = _take_source_record()
@@ -2198,7 +2590,15 @@ def download_translation(
                             translated_records.append({"text": line, "source": source_record})
                             continue
                         if current_source and current_source.get("starts_paragraph") and paragraph_buffer:
-                            _flush_paragraph_buffer()
+                            prev_buffer_text = paragraph_buffer[-1].strip() if paragraph_buffer else ""
+                            continuation_after_connector = bool(
+                                _re.search(r'\b(?:and|or|na|ya|kwa|of|to|the|a|an|de|van|en)$', prev_buffer_text, _re.IGNORECASE)
+                                and p
+                                and not _starts_new_body_block(p)
+                                and not _looks_like_isolated_translated_heading(p, prev_line, next_line, current_source)
+                            )
+                            if not continuation_after_connector:
+                                _flush_paragraph_buffer()
                         if _current_buffer_looks_like_subheading():
                             _flush_paragraph_buffer()
                         if _looks_like_isolated_translated_heading(p, prev_line, next_line, current_source):
@@ -2282,6 +2682,38 @@ def download_translation(
 
                     _flush_paragraph_buffer()
 
+                    def _normalize_lettered_prompt_fragments(records):
+                        normalized = []
+                        idx = 0
+                        while idx < len(records):
+                            rec = records[idx]
+                            text = (rec.get("text") or "").strip()
+                            if (
+                                _re.match(r'^[a-zA-Z]\.\s+\S+', text)
+                                and not _re.search(r'[.!?]\s*$', text)
+                                and idx + 1 < len(records)
+                            ):
+                                next_rec = records[idx + 1]
+                                next_text = (next_rec.get("text") or "").strip()
+                                if next_text in (":", ";"):
+                                    normalized.append({**rec, "text": text.rstrip() + next_text})
+                                    idx += 2
+                                    continue
+                                if (
+                                    next_text
+                                    and not _starts_new_body_block(next_text)
+                                    and not _is_toc_heading_like_line(next_text)
+                                    and not _is_toc_like_line(next_text)
+                                    and not _looks_like_source_subheading(next_text, next_rec.get("source"))
+                                    and len(text) <= 45
+                                ):
+                                    normalized.append({**rec, "text": text.rstrip() + " " + next_text})
+                                    idx += 2
+                                    continue
+                            normalized.append(rec)
+                            idx += 1
+                        return normalized
+
                     def _normalize_fragmented_chapter_titles(records):
                         normalized = []
                         idx = 0
@@ -2329,33 +2761,83 @@ def download_translation(
 
                     def _split_inline_intro_heading_records(records):
                         split_records = []
+                        heading_re = r'(?:INTRODUCTION|NHANGANYAYA|ISINGENISO|ISANDULELO|INTRODUCCI[ÓO]N|UTANGULIZI|INTRODUÇÃO|EINFÜHRUNG|PREFACE|DIBAJI)'
                         for rec in records:
                             text = (rec.get("text") or "").strip()
-                            match = _re.match(r'^(ISINGENISO|INTRODUCTION|NHANGANYAYA|ISANDULELO)\s+(.{40,})$', text, _re.IGNORECASE)
-                            if match:
-                                split_records.append({**rec, "text": match.group(1).strip()})
-                                split_records.append({**rec, "text": match.group(2).strip()})
-                            else:
+                            if not text:
                                 split_records.append(rec)
+                                continue
+                            start_match = _re.match(rf'^(?P<head>{heading_re})\s+(?P<body>.{{40,}})$', text, _re.IGNORECASE)
+                            if start_match:
+                                split_records.append({**rec, "text": start_match.group('head').strip()})
+                                split_records.append({**rec, "text": start_match.group('body').strip()})
+                                continue
+                            inline_match = _re.search(
+                                rf'(?P<prefix>.*?[.!?]|.*?\([^)]{{1,80}}\)|.*?\b(?:Dr|Dkt|Rev|Mchungaji|Prof)\.?\s+[A-ZÀ-Þ][\wÀ-ÿ.-]+(?:\s+[A-ZÀ-Þ][\wÀ-ÿ.-]+)?)\s+(?P<head>{heading_re})\s+(?P<body>.{{40,}})$',
+                                text,
+                                _re.IGNORECASE,
+                            )
+                            if inline_match:
+                                prefix = inline_match.group('prefix').strip()
+                                head = inline_match.group('head').strip()
+                                body = inline_match.group('body').strip()
+                                if prefix:
+                                    split_records.append({**rec, "text": prefix})
+                                split_records.append({**rec, "text": head})
+                                split_records.append({**rec, "text": body})
+                                continue
+                            split_records.append(rec)
                         return split_records
 
                     def _split_inline_allcaps_subheading_records(records):
                         split_records = []
+
+                        def _valid_inline_allcaps_heading(value):
+                            heading = _re.sub(r'\s+', ' ', (value or '')).strip()
+                            heading_words = _re.findall(r'\b[\wÀ-ÿ-]+\b', heading)
+                            return (
+                                heading
+                                and heading == heading.upper()
+                                and 1 <= len(heading_words) <= 8
+                                and not _starts_new_body_block(heading)
+                                and not heading.startswith("SICELA")
+                            )
+
                         for rec in records:
                             text = (rec.get("text") or "").strip()
-                            match = _re.match(r'^([A-ZÀ-Þ][A-ZÀ-Þ0-9\s\-–,()/:;&\'’]{5,80})\s+([A-ZÀ-Þ]?[a-zà-ÿ].{30,})$', text)
+                            match = _re.match(r'^([A-ZÀ-Þ][A-ZÀ-Þ0-9\s\-–,()/:;&\'’]{5,80})\s+(["“]?[A-ZÀ-Þ]?[a-zà-ÿ].{30,})$', text)
                             if match:
                                 heading = _re.sub(r'\s+', ' ', match.group(1)).strip()
                                 body = match.group(2).strip()
-                                heading_words = _re.findall(r'\b[\wÀ-ÿ-]+\b', heading)
-                                if (
-                                    heading == heading.upper()
-                                    and 1 <= len(heading_words) <= 8
-                                    and not _starts_new_body_block(heading)
-                                    and not heading.startswith("SICELA")
-                                ):
+                                if _valid_inline_allcaps_heading(heading):
                                     split_records.append({**rec, "text": heading})
                                     split_records.append({**rec, "text": body})
+                                    continue
+                            inline_match = _re.search(
+                                r'(?P<prefix>.*[.!?])\s+(?P<head>[A-ZÀ-Þ][A-ZÀ-Þ0-9\s\-–,()/:;&\'’]{2,50})\s+(?P<body>["“]?[A-ZÀ-Þ]?[a-zà-ÿ].{30,})$',
+                                text,
+                            )
+                            if inline_match:
+                                prefix = inline_match.group('prefix').strip()
+                                heading = _re.sub(r'\s+', ' ', inline_match.group('head')).strip()
+                                body = inline_match.group('body').strip()
+                                if _valid_inline_allcaps_heading(heading):
+                                    if prefix:
+                                        split_records.append({**rec, "text": prefix})
+                                    split_records.append({**rec, "text": heading})
+                                    split_records.append({**rec, "text": body})
+                                    continue
+                            tail_heading_match = _re.search(
+                                r'(?P<prefix>.*[.!?])\s+(?P<head>[A-ZÀ-Þ][A-ZÀ-Þ0-9\s\-–,()/:;&\'’]{2,50})$',
+                                text,
+                            )
+                            if tail_heading_match:
+                                prefix = tail_heading_match.group('prefix').strip()
+                                heading = _re.sub(r'\s+', ' ', tail_heading_match.group('head')).strip()
+                                if _valid_inline_allcaps_heading(heading):
+                                    if prefix:
+                                        split_records.append({**rec, "text": prefix})
+                                    split_records.append({**rec, "text": heading})
                                     continue
                             split_records.append(rec)
                         return split_records
@@ -2585,6 +3067,8 @@ def download_translation(
                     def _split_inline_chapter_heading_records(records):
                         split_records = []
                         split_markers = (
+                            ' MSTARI MUHIMU:', ' MSTARI MUHIMU ', ' KEY VERSE:', ' KEY VERSE ',
+                            ' SLEUTELVERS:', ' SLEUTELVERS ', ' IVESI ELIYINHLOKO:', ' IVESI ELIYINHLOKO ',
                             ' Umbono ', ' Inhloso ', ' Indima ', ' Ukubaluleka ', ' Ngokusho ',
                             ' Kodwa-ke, ', ' Manje ', ' Kuleli ', ' Le ', ' Lolu ', ' Njengoba ',
                             ' The ', ' Purpose ', ' According ', ' Role ', ' Practical ',
@@ -2629,7 +3113,10 @@ def download_translation(
                                     _emit_chapter_text(rec, chapter_text)
                         return split_records
 
-                    translated_records = _mark_table_records(_split_inline_lettered_dot_records(_split_inline_chapter_heading_records(_split_inline_allcaps_subheading_records(_split_inline_intro_heading_records(_normalize_fragmented_chapter_titles(translated_records))))))
+                    translated_records = _mark_table_records(_split_inline_lettered_dot_records(_split_inline_chapter_heading_records(_split_inline_allcaps_subheading_records(_split_inline_intro_heading_records(_normalize_lettered_prompt_fragments(_normalize_fragmented_chapter_titles(translated_records)))))))
+
+                    # Let ReportLab flow body text naturally. Hard source-page breaks
+                    # orphan headings and split workbook prompts from their answers.
 
                     def _chapter_heading_number(value):
                         match = _re.match(
@@ -2721,6 +3208,20 @@ def download_translation(
                             )
                         )
 
+                    _body_allows_colon_chapter_headings_runtime = False
+                    try:
+                        _original_toc_entries_for_body = []
+                        for _page_idx in range(0, min(12, len(orig_doc))):
+                            if 'TABLE OF CONTENTS' in _orig_page_text_upper(_page_idx):
+                                _original_toc_entries_for_body = _derive_workbook_toc_entries(orig_doc[_page_idx].get_text('text', sort=True).splitlines())
+                                break
+                        _body_allows_colon_chapter_headings_runtime = any(
+                            _re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*:', _entry, _re.IGNORECASE)
+                            for _entry in _original_toc_entries_for_body
+                        )
+                    except Exception:
+                        _body_allows_colon_chapter_headings_runtime = False
+
                     body_sections = [[]]
                     seen_chapter_numbers = set()
                     seen_chapter_titles = set()
@@ -2730,6 +3231,37 @@ def download_translation(
                     intro_heading_emitted = False
                     initial_body_heading_emitted = False
                     initial_body_heading_pending = (body_heading_after_toc or '').strip() or None
+                    _rendered_source_image_pages = set()
+
+                    def _source_page_image_flowables(source_page_number: int):
+                        if not source_page_number or source_page_number < 1 or source_page_number > len(orig_doc):
+                            return []
+                        page = orig_doc[source_page_number - 1]
+                        flowables = []
+                        max_width = 6.0 * inch
+                        max_height = 3.2 * inch
+                        for block in page.get_text("dict").get("blocks", []):
+                            if block.get("type") != 1 or not block.get("image"):
+                                continue
+                            bbox = block.get("bbox") or (0, 0, 0, 0)
+                            width = max(float(bbox[2]) - float(bbox[0]), 1)
+                            height = max(float(bbox[3]) - float(bbox[1]), 1)
+                            if width < 40 or height < 40:
+                                continue
+                            img = RLImage(_io.BytesIO(block.get("image")))
+                            scale = min(max_width / width, max_height / height, 1.0)
+                            img.drawWidth = width * scale
+                            img.drawHeight = height * scale
+                            img.hAlign = "CENTER"
+                            flowables.extend([Spacer(1, 0.08 * inch), img, Spacer(1, 0.08 * inch)])
+                        return flowables
+
+                    def _append_source_page_images(source_page_number: int):
+                        if not source_page_number or source_page_number in _rendered_source_image_pages:
+                            return
+                        _rendered_source_image_pages.add(source_page_number)
+                        for image_flowable in _source_page_image_flowables(source_page_number):
+                            _append_flowable(image_flowable)
 
                     def _chapter_heading_key(value):
                         if not value:
@@ -2740,6 +3272,65 @@ def download_translation(
 
                     def _append_flowable(flowable):
                         body_sections[-1].append(flowable)
+
+                    def _append_paragraph(text, style, *, keep_together=False):
+                        para = Paragraph(text, style)
+                        if keep_together:
+                            _append_flowable(KeepTogether([para]))
+                        else:
+                            _append_flowable(para)
+
+                    def _append_heading_paragraph(text, style):
+                        # Keep headings/subheads with at least a little following text.
+                        # This prevents orphaned prompts at page bottoms while still
+                        # allowing the next paragraph to flow naturally if it is long.
+                        _append_flowable(KeepTogether([Paragraph(text, style), Spacer(1, 0.02*inch)]))
+
+                    def _should_keep_paragraph_together(text):
+                        value = (text or '').strip()
+                        words = _re.findall(r'\S+', value)
+                        if not words:
+                            return False
+                        # Only keep genuinely short prompts together. Keeping normal
+                        # paragraphs together creates large blank gaps and pushes body
+                        # text onto new pages.
+                        if _is_form_or_checklist_line(value) or value.startswith('• '):
+                            return len(words) <= 45
+                        return len(words) <= 28
+
+                    def _chapter_title_prefixes_from_toc():
+                        prefixes = []
+                        seen = set()
+                        for entry in toc_entries or []:
+                            candidate = _clean_toc_entry_text(entry)
+                            if not candidate:
+                                continue
+                            if not _re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*[:\-–]\s+\D', candidate, _re.IGNORECASE):
+                                continue
+                            key = _re.sub(r'\s+', ' ', candidate).strip().upper()
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            prefixes.append(candidate)
+                        prefixes.sort(key=len, reverse=True)
+                        return prefixes
+
+                    chapter_title_prefixes = _chapter_title_prefixes_from_toc()
+
+                    def _split_known_chapter_heading_prefix(value):
+                        candidate = (value or '').strip()
+                        if not candidate:
+                            return None
+                        collapsed_candidate = _re.sub(r'\s+', ' ', candidate).strip()
+                        for heading in chapter_title_prefixes:
+                            collapsed_heading = _re.sub(r'\s+', ' ', heading).strip()
+                            if collapsed_candidate.upper() == collapsed_heading.upper():
+                                return None
+                            if collapsed_candidate.upper().startswith(collapsed_heading.upper() + ' '):
+                                tail = collapsed_candidate[len(collapsed_heading):].strip()
+                                if tail:
+                                    return collapsed_heading, tail
+                        return None
 
                     if False and toc_entries:
                         toc_title_safe = _normalize_render_quotes((toc_title_text or 'Table of Contents')).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
@@ -2753,13 +3344,27 @@ def download_translation(
                         forced_intro_heading_pending = None
 
                     for record in translated_records:
+                        if record.get("page_break"):
+                            if body_sections[-1]:
+                                _append_flowable(PageBreak())
+                            previous_body_heading = "section"
+                            continue
                         p = record["text"].strip()
                         source_record = record["source"]
+                        _append_source_page_images((source_record or {}).get("page_number"))
                         force_chapter = bool(record.get("force_chapter"))
                         force_subheading = bool(record.get("force_subheading"))
                         if record.get("table_rows"):
                             table_data = []
                             max_cols = max((len(row) for row in record["table_rows"]), default=0)
+                            if max_cols > 6:
+                                for row in record["table_rows"]:
+                                    row_text = " ".join(str(cell).strip() for cell in row if str(cell).strip())
+                                    if row_text:
+                                        row_safe = _normalize_render_quotes(row_text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                                        _append_flowable(Paragraph(row_safe, body_style))
+                                previous_body_heading = None
+                                continue
                             for row_idx, row in enumerate(record["table_rows"]):
                                 padded_row = list(row) + [""] * max(0, max_cols - len(row))
                                 table_data.append([
@@ -2791,14 +3396,14 @@ def download_translation(
                             if body_sections[-1] and previous_body_heading != "section":
                                 _append_flowable(PageBreak())
                             _append_flowable(Spacer(1, 0.15*inch))
-                            _append_flowable(Paragraph(safe_forced, chapter_heading_style))
+                            _append_heading_paragraph(safe_forced, chapter_heading_style)
                             _append_flowable(Spacer(1, 0.08*inch))
                             previous_body_heading = "chapter"
                             continue
                         if force_subheading:
                             safe_forced = _normalize_render_quotes(p).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                             _append_flowable(Spacer(1, 0.06*inch))
-                            _append_flowable(Paragraph(safe_forced, subhead_style))
+                            _append_heading_paragraph(safe_forced, subhead_style)
                             _append_flowable(Spacer(1, 0.04*inch))
                             previous_body_heading = None
                             continue
@@ -2808,9 +3413,9 @@ def download_translation(
                                 if body_sections[-1]:
                                     body_sections.append([])
                                 safe_initial = _normalize_render_quotes(p).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                                initial_style = heading_style if _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]?', p, _re.IGNORECASE) else chapter_heading_style
+                                initial_style = heading_style if _re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?', p, _re.IGNORECASE) else chapter_heading_style
                                 _append_flowable(Spacer(1, 0.15*inch))
-                                _append_flowable(Paragraph(safe_initial, initial_style))
+                                _append_heading_paragraph(safe_initial, initial_style)
                                 _append_flowable(Spacer(1, 0.08*inch))
                                 previous_body_heading = "section" if initial_style == heading_style else "chapter"
                                 initial_body_heading_emitted = True
@@ -2820,7 +3425,7 @@ def download_translation(
                                     body_sections.append([])
                                 safe_initial = _normalize_render_quotes(p).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                                 _append_flowable(Spacer(1, 0.15*inch))
-                                _append_flowable(Paragraph(safe_initial, intro_title_style))
+                                _append_heading_paragraph(safe_initial, intro_title_style)
                                 _append_flowable(Spacer(1, 0.08*inch))
                                 previous_body_heading = "intro"
                                 intro_heading_emitted = True
@@ -2847,8 +3452,8 @@ def download_translation(
                                 bullet_only = "• " + inline_bullet_split.group(1).strip()
                                 bullet_safe = _normalize_render_quotes(bullet_only).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                                 tail_safe = _normalize_render_quotes(inline_bullet_split.group(2).strip()).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-                                _append_flowable(Paragraph(bullet_safe, indent_style))
-                                _append_flowable(Paragraph(tail_safe, body_style))
+                                _append_paragraph(bullet_safe, indent_style, keep_together=True)
+                                _append_paragraph(tail_safe, body_style, keep_together=_should_keep_paragraph_together(tail_text if 'tail_text' in locals() else tail_safe))
                                 continue
                         normalized_upper = _re.sub(r'\s+', ' ', p).strip().upper()
                         promoted_heading = chapter_heading_lookup.get(normalized_upper)
@@ -2857,26 +3462,80 @@ def download_translation(
                             if promoted_num and promoted_num not in seen_chapter_numbers:
                                 p = promoted_heading
                         p = _normalize_render_quotes(p)
+                        p = _strip_translated_footer_prefix(p)
+                        if not p or p.strip() in {"•", "-", "–", "—"}:
+                            continue
+                        inline_ref_body, inline_references = _split_inline_url_references(p)
+                        if inline_references:
+                            if inline_ref_body:
+                                p = inline_ref_body
+                            else:
+                                _append_reference_flowables(inline_references)
+                                previous_body_heading = None
+                                continue
+                        chapter_tail_match = _re.match(
+                            r'^(?P<head>(?:CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*[:\-–]\s+.+?)\s+(?P<tail>Ngokusho\b.+)$',
+                            p,
+                            _re.IGNORECASE,
+                        )
+                        if chapter_tail_match:
+                            heading_text = chapter_tail_match.group("head").strip()
+                            tail_text = chapter_tail_match.group("tail").strip()
+                            if body_sections[-1] and previous_body_heading != "section":
+                                _append_flowable(PageBreak())
+                            heading_safe = heading_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                            tail_safe = tail_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                            _append_flowable(Spacer(1, 0.15*inch))
+                            _append_heading_paragraph(heading_safe, chapter_heading_style)
+                            _append_flowable(Spacer(1, 0.08*inch))
+                            _append_paragraph(tail_safe, body_style, keep_together=_should_keep_paragraph_together(tail_text if 'tail_text' in locals() else tail_safe))
+                            if inline_references:
+                                _append_reference_flowables(inline_references)
+                            previous_body_heading = None
+                            continue
                         if previous_body_heading == "chapter":
                             trailing_subheading_parts = _split_trailing_subheading(p, source_record)
                             if trailing_subheading_parts:
                                 prefix_part, subheading_part = trailing_subheading_parts
                                 if prefix_part:
                                     prefix_safe = prefix_part.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-                                    _append_flowable(Paragraph(prefix_safe, chapter_heading_style))
+                                    _append_heading_paragraph(prefix_safe, chapter_heading_style)
                                 subheading_safe = subheading_part.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                                 _append_flowable(Spacer(1, 0.05*inch))
-                                _append_flowable(Paragraph(subheading_safe, subhead_style))
+                                _append_heading_paragraph(subheading_safe, subhead_style)
                                 previous_body_heading = None
                                 continue
+                        known_heading_split = _split_known_chapter_heading_prefix(p)
+                        if known_heading_split and not _is_bible_reference_chapter_line(p):
+                            heading_text, tail_text = known_heading_split
+                            heading_safe = heading_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                            tail_safe = tail_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                            if body_sections[-1] and previous_body_heading != "section":
+                                _append_flowable(PageBreak())
+                            _append_flowable(Spacer(1, 0.15*inch))
+                            _append_heading_paragraph(heading_safe, chapter_heading_style)
+                            _append_flowable(Spacer(1, 0.08*inch))
+                            tail_is_short_heading = (
+                                len(tail_text) <= 90
+                                and not _re.search(r'[.!?]$', tail_text)
+                                and (_looks_like_isolated_translated_heading(tail_text, '', '', source_record) or tail_text.endswith(':'))
+                            )
+                            if tail_is_short_heading:
+                                _append_heading_paragraph(tail_safe, subhead_style)
+                            else:
+                                _append_paragraph(tail_safe, body_style, keep_together=_should_keep_paragraph_together(tail_text))
+                            previous_body_heading = None
+                            continue
+
                         safe = p.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                         is_source_bold = bool(source_record and source_record["bold"])
                         source_size = float(source_record["size"] if source_record else 11)
                         # Pattern-based overrides (reliable regardless of source pairing)
-                        is_section = bool(_re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA)\s+\d+\s*[:\-–]\s+\D', p, _re.IGNORECASE))
+                        is_section = bool(_re.match(r'^(SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]\s+\D', p, _re.IGNORECASE))
                         is_chapter = force_chapter or (bool(_re.match(r'^(CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*[:\-–]\s+\D', p, _re.IGNORECASE)) and not _is_bible_reference_chapter_line(p))
                         is_allcaps = len(p) < 80 and p.isupper() and len(p) > 3
-                        is_lettered = bool(_re.match(r'^[a-zA-Z]\) .{2,}', p) and len(p) < 120)
+                        is_form_line = _is_form_or_checklist_line(p)
+                        is_lettered = bool(_re.match(r'^[a-zA-Z]\) .{2,}', p) and len(p) < 120 and not is_form_line)
                         looks_like_sentence = (
                             len(p) > 70
                             or p.endswith((".", ",", ";", ":", "?", "!", "”"))
@@ -2890,8 +3549,10 @@ def download_translation(
                         )
                         is_intro_heading = bool(introduction_pattern.match(p)) and "....." not in p
                         if is_section:
-                            _append_flowable(Paragraph(safe, heading_style))
-                            _append_flowable(Spacer(1, 0.06*inch))
+                            if body_sections[-1]:
+                                _append_flowable(PageBreak())
+                            _append_heading_paragraph(safe, heading_style)
+                            _append_flowable(Spacer(1, 0.08*inch))
                             previous_body_heading = "section"
                         elif is_chapter or is_intro_heading:
                             chapter_num = _chapter_heading_number(p)
@@ -2907,12 +3568,12 @@ def download_translation(
                             if chapter_key:
                                 seen_chapter_titles.add(chapter_key)
                             _append_flowable(Spacer(1, 0.15*inch))
-                            _append_flowable(Paragraph(safe, chapter_heading_style if is_chapter else intro_title_style))
+                            _append_heading_paragraph(safe, chapter_heading_style if is_chapter else intro_title_style)
                             _append_flowable(Spacer(1, 0.08*inch))
                             previous_body_heading = "chapter" if is_chapter else "intro"
                         elif previous_body_heading == "intro" and _is_intro_title_line(p, source_record):
                             _append_flowable(Spacer(1, 0.05*inch))
-                            _append_flowable(Paragraph(safe, intro_title_style))
+                            _append_heading_paragraph(safe, intro_title_style)
                             previous_body_heading = None
                         elif (
                             normalized_upper in chapter_heading_lookup
@@ -2923,24 +3584,29 @@ def download_translation(
                             # them into chapter headings after the real chapter title has
                             # already been emitted.
                             _append_flowable(Spacer(1, 0.05*inch))
-                            _append_flowable(Paragraph(safe, subhead_style))
+                            _append_heading_paragraph(safe, subhead_style)
+                            previous_body_heading = None
+                        elif is_form_line:
+                            _append_paragraph(safe, indent_style if p.startswith(("-", "–", "—")) else body_style, keep_together=True)
                             previous_body_heading = None
                         elif force_subheading or is_allcaps or is_lettered or safe_source_bold:
                             _append_flowable(Spacer(1, 0.05*inch))
-                            _append_flowable(Paragraph(safe, subhead_style))
+                            _append_heading_paragraph(safe, subhead_style)
                             previous_body_heading = None
                         elif _re.match(r'^\d+\. ', p):
-                            _append_flowable(Paragraph(safe, subhead_style if _is_numbered_subhead_line(p, source_record) else body_style))
+                            _append_paragraph(safe, subhead_style if _is_numbered_subhead_line(p, source_record) else body_style, keep_together=_should_keep_paragraph_together(p))
                             previous_body_heading = None
                         elif p.startswith("• "):
-                            _append_flowable(Paragraph(safe, indent_style))
+                            _append_paragraph(safe, indent_style, keep_together=True)
                             previous_body_heading = None
                         elif _re.match(r'^\([ivxabc]+\)', p):
-                            _append_flowable(Paragraph(safe, indent_style))
+                            _append_paragraph(safe, indent_style, keep_together=True)
                             previous_body_heading = None
                         else:
-                            _append_flowable(Paragraph(safe, body_style))
+                            _append_paragraph(safe, body_style, keep_together=_should_keep_paragraph_together(p))
                             previous_body_heading = None
+                        if inline_references:
+                            _append_reference_flowables(inline_references)
                     front_bytes = b""
                     if workbook_front_story:
                         front_buf = _io.BytesIO()
@@ -2961,35 +3627,59 @@ def download_translation(
                         _log.getLogger(__name__).warning(f"ReportLab build failed: {_e}")
                         body_bytes = b""
 
-                    # --- Translate page 100 (index 99) in-place using overlay ---
-                    if last_page >= 99:
-                        p100 = orig_doc[last_page - 1]
-                        p100_blocks = []
-                        for b in p100.get_text("dict")["blocks"]:
-                            if b.get("type") != 0: continue
-                            text = "".join(s["text"] for l in b["lines"] for s in l["spans"]).strip()
-                            if not text or text.startswith("©"): continue
-                            if len(text) <= 150 and ("@" in text or "www." in text): continue
-                            p100_blocks.append((b["bbox"], text))
-                        if p100_blocks and any(
-                            marker in p100.get_text("text", sort=True).upper()
-                            for marker in (
-                                "WHETHER YOU ARE SEARCHING FOR A BIBLE COLLEGE",
-                                "TEAM IMPACT CHRISTIAN UNIVERSITY",
-                                "TIUNIVERSITY.COM",
-                            )
-                        ):
-                            _render_standard_promo_page(p100)
-                        elif p100_blocks:
-                            translated_p100 = _batch_translate([t for _, t in p100_blocks], source_code, target_code)
-                            for (bbox, _), trans in zip(p100_blocks, translated_p100):
-                                p100.add_redact_annot(_fitz.Rect(bbox), fill=(1,1,1))
-                            p100.apply_redactions()
-                            for (bbox, _), trans in zip(p100_blocks, translated_p100):
-                                rect = _fitz.Rect(bbox)
-                                for fs in [10, 8, 7]:
-                                    if p100.insert_textbox(rect, trans, fontsize=fs, fontname=overlay_regular_name, fontfile=overlay_regular_file, color=(0,0,0)) >= 0:
-                                        break
+                    def _find_tail_promo_page_index():
+                        markers = (
+                            "WHETHER YOU ARE SEARCHING FOR A BIBLE COLLEGE",
+                            "TEAM IMPACT CHRISTIAN UNIVERSITY",
+                            "TIUNIVERSITY.COM",
+                        )
+                        for page_idx in range(last_page, max(-1, last_page - 4), -1):
+                            page_text = orig_doc[page_idx].get_text("text", sort=True).upper()
+                            if any(marker in page_text for marker in markers):
+                                return page_idx
+                        return None
+
+                    def _stored_tail_promo_lines():
+                        lines = [ln.strip() for ln in translation.translated_text.split("\n") if ln.strip()]
+                        start = None
+                        for idx in range(len(lines) - 1, -1, -1):
+                            upper = lines[idx].upper()
+                            if (
+                                "BIBLE COLLEGE" in upper
+                                or "KOLISHI LEBHAYIBHELI" in upper
+                                or "KOLISHI LAMAKRISTU" in upper
+                                or "THEOLOGICAL SEMINARY" in upper
+                                or "SEMINARI YEZENKOLO" in upper
+                            ):
+                                start = idx
+                                break
+                        if start is None:
+                            return []
+                        return lines[start:start + 8]
+
+                    def _render_tail_promo_page(page):
+                        stored_lines = _stored_tail_promo_lines()
+                        for block in page.get_text("dict").get("blocks", []):
+                            if block.get("type") == 0:
+                                page.add_redact_annot(_fitz.Rect(block["bbox"]), fill=(1, 1, 1))
+                        page.apply_redactions()
+                        if stored_lines:
+                            title = " ".join(stored_lines[:2]).strip()
+                            org = next((line for line in stored_lines if "Team Impact" in line or "TEAM IMPACT" in line or "I-Team Impact" in line), "Team Impact Christian University")
+                            subtitle = next((line for line in stored_lines if line != title and line != org and "www." not in line and "@" not in line), "")
+                            _insert_fitted_textbox(page, _fitz.Rect(26, 40, page.rect.x1 - 26, 95), title, bold=False, align=1, sizes=(14, 13, 12, 11, 10))
+                            _insert_fitted_textbox(page, _fitz.Rect(40, 105, page.rect.x1 - 40, 175), subtitle, bold=False, align=1, sizes=(12, 11, 10, 9, 8))
+                            _insert_fitted_textbox(page, _fitz.Rect(110, 185, page.rect.x1 - 110, 220), org, bold=False, align=1, sizes=(13, 12, 11, 10))
+                        website_rect = _fitz.Rect(190, 540, page.rect.x1 - 190, 560)
+                        email_rect = _fitz.Rect(185, 563, page.rect.x1 - 185, 585)
+                        _insert_fitted_textbox(page, website_rect, "www.tiuniversity.com", bold=False, align=1, sizes=(11, 10, 9))
+                        _insert_fitted_textbox(page, email_rect, "info@tiuniversity.com", bold=False, align=1, sizes=(11, 10, 9))
+                        page.insert_link({"kind": _fitz.LINK_URI, "from": website_rect, "uri": "https://www.tiuniversity.com"})
+                        page.insert_link({"kind": _fitz.LINK_URI, "from": email_rect, "uri": "mailto:info@tiuniversity.com"})
+
+                    tail_promo_page_idx = _find_tail_promo_page_index()
+                    if tail_promo_page_idx is not None:
+                        _render_tail_promo_page(orig_doc[tail_promo_page_idx])
 
                     # --- Assemble: translated front matter + body + last 2 pages ---
                     mod_buf = _io.BytesIO()
@@ -3001,12 +3691,33 @@ def download_translation(
                     _log.getLogger(__name__).warning(f'assemble intro_heading={intro_title_text!r} workbook_like={workbook_like} toc_entries={len(toc_entries) if "toc_entries" in locals() else -1}')
                     if workbook_like:
                         if _cached_front_matter_available and front_bytes:
-                            cover_page = mod_doc[0]
-                            for _block in cover_page.get_text("dict").get("blocks", []):
-                                if _block.get("type") == 0:
-                                    cover_page.add_redact_annot(_fitz.Rect(_block["bbox"]), fill=(1, 1, 1))
-                            cover_page.apply_redactions()
-                            out.insert_pdf(mod_doc, from_page=0, to_page=0)
+                            # Preserve uploaded cover exactly; do not translate/redact page 1.
+                            out.insert_pdf(orig_doc, from_page=0, to_page=0)
+                            # Some workbooks have a second, title-only page before the translatable manual page.
+                            # Rebuild that page with the translated course title instead of preserving English.
+                            if len(orig_doc) > 1:
+                                _p1_text = [ln.strip() for ln in orig_doc[1].get_text("text", sort=True).splitlines() if ln.strip()]
+                                _p1_joined = " ".join(_p1_text)
+                                if _p1_text and len(_p1_text) <= 3 and len(_p1_joined) <= 120 and not _re.search(r"HOW TO USE|EXAMINATION|TABLE OF CONTENTS", _p1_joined, _re.IGNORECASE):
+                                    _title_doc = _fitz.open()
+                                    _title_page = _title_doc.new_page(width=orig_doc[1].rect.width, height=orig_doc[1].rect.height)
+                                    _course_code_match = _re.search(r"\b(?:BH|BG|DC|CC)\d{3}\b", _p1_joined, _re.IGNORECASE)
+                                    _course_code = _course_code_match.group(0).upper() if _course_code_match else ""
+                                    _title_candidates = [(ln or '').strip() for ln in (title_page_lines or []) if (ln or '').strip()]
+                                    _translated_title = ""
+                                    if _course_code:
+                                        _translated_title = next((ln for ln in _title_candidates if _course_code in ln.upper()), "")
+                                        if not _translated_title:
+                                            _translated_title = next((ln.strip() for ln in _stored_translated_lines[:40] if _course_code in (ln or '').upper()), "")
+                                    if not _translated_title:
+                                        _translated_title = next((ln for ln in _title_candidates if not _re.search(r"TEAM IMPACT|IYUNIVESITHI|YUNIVHESITI|UNIVERSITY", ln, _re.IGNORECASE)), "")
+                                    if not _translated_title:
+                                        _translated_title = next(iter(_title_candidates), "")
+                                    if not _translated_title:
+                                        _translated_title = _next_front_translated_line(_p1_joined)
+                                    _log.getLogger(__name__).warning(f'title_page_selected code={_course_code!r} original={_p1_joined!r} translated={_translated_title!r} candidates={_title_candidates[:4]!r}')
+                                    _insert_fitted_textbox(_title_page, _fitz.Rect(45, 45, _title_page.rect.x1 - 45, 180), _translated_title, bold=True, align=1, sizes=(18, 16, 14, 12))
+                                    out.insert_pdf(_title_doc)
                             front_fitz = _fitz.open("pdf", front_bytes)
                             out.insert_pdf(front_fitz)
                         else:
@@ -3020,7 +3731,13 @@ def download_translation(
                     if body_bytes:
                         body_fitz = _fitz.open("pdf", body_bytes)
                         out.insert_pdf(body_fitz)
-                    if last_page >= body_start_page_idx:
+                    # Workbook translations are fully rebuilt from stored translated text.
+                    # Append only the translated logo/promo page, not original English body pages.
+                    if workbook_like and tail_promo_page_idx is not None:
+                        promo_doc = _fitz.open()
+                        promo_doc.insert_pdf(orig_doc, from_page=tail_promo_page_idx, to_page=tail_promo_page_idx)
+                        out.insert_pdf(promo_doc)
+                    elif not workbook_like and last_page >= body_start_page_idx:
                         out.insert_pdf(orig_doc, from_page=max(last_page - 1, body_start_page_idx), to_page=last_page)
 
                     def _stamp_dynamic_page_numbers(doc):

@@ -44,6 +44,17 @@ def translate_chunk(text: str, source_lang: str, target_lang: str) -> str:
     except Exception as e:
         logger.warning(f"Google Translate failed: {e}")
 
+    # easygoogletranslate — free, no API key needed
+    try:
+        from easygoogletranslate import EasyGoogleTranslate
+        translator = EasyGoogleTranslate(source_language=source_lang, target_language=target_lang, timeout=30)
+        result = translator.translate(text[:5000])
+        if result:
+            logger.info(f"Translated using easygoogletranslate {source_lang} -> {target_lang}")
+            return result
+    except Exception as e:
+        logger.warning(f"easygoogletranslate failed: {e}")
+
     logger.warning(f"Google Translate failed, trying LibreTranslate fallback")
 
     # LibreTranslate fallback
@@ -96,6 +107,28 @@ def _batch_translate(texts: list[str], source_lang: str, target_lang: str) -> li
     except Exception as e:
         logger.warning(f"Batch translate failed: {e}")
 
+    # easygoogletranslate batch — concurrent individual requests
+    try:
+        from easygoogletranslate import EasyGoogleTranslate
+        translator = EasyGoogleTranslate(source_language=source_lang, target_language=target_lang, timeout=30)
+        results = [None] * len(texts)
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {executor.submit(translator.translate, t[:5000]): i for i, t in enumerate(texts)}
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as exc:
+                    logger.warning(f"easygoogletranslate item failed: {exc}")
+                    results[idx] = None
+        failed = sum(1 for value in results if not value)
+        if failed > max(3, len(texts) // 4):
+            raise RuntimeError(f"easygoogletranslate batch failed for {failed}/{len(texts)} items")
+        logger.info(f"Batch translated via easygoogletranslate {source_lang}->{target_lang}")
+        return [result if result else texts[idx] for idx, result in enumerate(results)]
+    except Exception as e:
+        logger.warning(f"easygoogletranslate batch failed: {e}")
+
     # Fallback: concurrent individual requests
     results = [None] * len(texts)
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -143,8 +176,8 @@ def _translate_excel_json(original_text: str, source_lang: str, target_lang: str
         rows = sheets.get(sheet_name, [])
         translated_rows = []
         for row_idx, row in enumerate(rows):
-            # Keep first 3 rows of sheet 2 and sheet 3 (index 1 and 2) untranslated
-            if sheet_idx in (1, 2) and row_idx < 3:
+            # Keep first 3 rows of sheet 2 (index 1) untranslated
+            if sheet_idx == 1 and row_idx < 3:
                 translated_rows.append(row)
             else:
                 translated_rows.append(
@@ -230,6 +263,24 @@ def translate_content(
             # Rebuild with same line structure
             translated_lines = [translated_map.get(i, l) for i, l in enumerate(lines)]
             translated_text = "\n".join(translated_lines)
+
+            if source_lang_code != target_lang_code:
+                comparable = [
+                    (orig.strip(), (translated_map.get(idx) or "").strip())
+                    for idx, orig in non_empty_lines
+                    if len(orig.strip()) >= 25 and not orig.strip().startswith(("http://", "https://", "www."))
+                ]
+                if comparable:
+                    unchanged = sum(1 for orig, trans in comparable if trans == orig)
+                    unchanged_ratio = unchanged / len(comparable)
+                    if unchanged_ratio > 0.65:
+                        raise RuntimeError(
+                            f"Translation provider returned mostly unchanged text ({unchanged}/{len(comparable)} lines)"
+                        )
+            
+            # Apply format fixing to clean up translation
+            from app.services.translation_format_fixer import fix_translation_format
+            translated_text = fix_translation_format(translated_text, original_text)
 
         translation = (
             db.query(Translation)
