@@ -241,6 +241,18 @@ def translate_content(
         except Exception:
             pass
 
+        translation = (
+            db.query(Translation)
+            .filter(Translation.id == uuid.UUID(translation_id))
+            .first()
+        )
+        is_docx_book = False
+        if translation and translation.content_type == "book":
+            from app.models import Book
+            book_for_format = db.query(Book).filter(Book.id == translation.content_id).first()
+            source_docx_path = (getattr(book_for_format, "normalized_docx_path", None) or book_for_format.file_path) if book_for_format else None
+            is_docx_book = bool(source_docx_path and source_docx_path.endswith(".docx"))
+
         if is_excel:
             translated_text = _translate_excel_json(original_text, source_lang_code, target_lang_code)
             chunks = [original_text]  # for chunk_count
@@ -278,15 +290,13 @@ def translate_content(
                             f"Translation provider returned mostly unchanged text ({unchanged}/{len(comparable)} lines)"
                         )
             
-            # Apply format fixing to clean up translation
-            from app.services.translation_format_fixer import fix_translation_format
-            translated_text = fix_translation_format(translated_text, original_text)
+            # DOCX rendering depends on one translated line per source paragraph.
+            # The generic formatter can merge/remove lines, so keep DOCX translations
+            # line-stable and let the DOCX layout carry formatting.
+            if not is_docx_book:
+                from app.services.translation_format_fixer import fix_translation_format
+                translated_text = fix_translation_format(translated_text, original_text)
 
-        translation = (
-            db.query(Translation)
-            .filter(Translation.id == uuid.UUID(translation_id))
-            .first()
-        )
         if translation:
             translation.translated_text = translated_text
             translation.status = "done"
@@ -308,7 +318,9 @@ def translate_content(
             try:
                 from app.models import Book
                 book = db.query(Book).filter(Book.id == translation.content_id).first()
-                if book and book.file_path and book.file_path.endswith(".docx"):
+                # Downloads render normalized DOCX via LibreOffice with the current layout rules.
+                # Keep this old ReportLab pre-generation path disabled to avoid stale formatting caches.
+                if False and book and book.file_path and book.file_path.endswith(".docx"):
                     cached_pdf_key = book.file_path.replace(".docx", f"_translated_{translation.language_id}.pdf")
                     cached_pdf_path = f"{settings.STORAGE_ROOT}/{cached_pdf_key}"
                     if not os.path.exists(cached_pdf_path):

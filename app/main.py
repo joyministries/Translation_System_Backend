@@ -15,6 +15,10 @@ Base.metadata.create_all(bind=engine)
 try:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255)"))
+        conn.execute(text("ALTER TABLE books ADD COLUMN IF NOT EXISTS normalized_docx_path VARCHAR(1000)"))
+        conn.execute(text("ALTER TABLE books ADD COLUMN IF NOT EXISTS normalized_source_type VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE books ADD COLUMN IF NOT EXISTS normalization_status VARCHAR(20)"))
+        conn.execute(text("ALTER TABLE books ADD COLUMN IF NOT EXISTS normalization_error TEXT"))
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS book_images (
                 id UUID PRIMARY KEY,

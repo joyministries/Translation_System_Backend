@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models import Book, Language, User
 from app.models.translation import Translation
 from app.services.translation_service import TranslationService
+from app.services.document_conversion_service import CONVERTIBLE_TO_DOCX_MIME_TYPES, DOCX_MIME
 from app.utils.file_utils import save_upload_stream_securely
 from app.utils.security import require_role
 
@@ -170,6 +171,9 @@ async def integration_exchange(
     book = Book(
         title=title or file.filename or "uploaded-book",
         file_path=filename,
+        normalized_docx_path=filename if mime_type == DOCX_MIME else None,
+        normalized_source_type=mime_type,
+        normalization_status="done" if mime_type == DOCX_MIME else ("pending" if mime_type in CONVERTIBLE_TO_DOCX_MIME_TYPES else None),
         file_size_bytes=file_size_bytes,
         uploaded_by=None,
         extraction_status="pending",
@@ -183,10 +187,7 @@ async def integration_exchange(
         from app.tasks.ingestion_tasks import extract_pdf_text
 
         extract_pdf_text.delay(str(book.id), filename)
-    elif mime_type in [
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ]:
+    elif mime_type in CONVERTIBLE_TO_DOCX_MIME_TYPES:
         from app.tasks.ingestion_tasks import extract_doc_text
 
         extract_doc_text.delay(str(book.id), filename)

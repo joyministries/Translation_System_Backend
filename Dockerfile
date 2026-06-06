@@ -10,6 +10,9 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     catdoc \
     tesseract-ocr \
+    libreoffice-writer \
+    libreoffice-java-common \
+    fonts-dejavu \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

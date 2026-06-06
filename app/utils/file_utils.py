@@ -12,6 +12,9 @@ ALLOWED_MIME_TYPES = {
     "application/vnd.ms-excel": ".xls",
     "application/msword": ".doc",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/rtf": ".rtf",
+    "text/rtf": ".rtf",
 }
 
 IMAGE_ALLOWED_MIME_TYPES = {
