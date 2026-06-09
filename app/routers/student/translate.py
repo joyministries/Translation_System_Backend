@@ -1529,8 +1529,11 @@ def download_translation(
                                     y0 = min(float(s.get("bbox", [0, 0, 0, 0])[1]) for s in spans)
                                     y1 = max(float(s.get("bbox", [0, 0, 0, 0])[3]) for s in spans)
                                     gap = (y0 - previous_y1) if previous_y1 is not None else 0
-                                    previous_sentence_break = bool(_re.search(r"[.!?](?:\"|”|\')?$", previous_text.strip())) if previous_text else False
-                                    starts_paragraph = previous_y1 is None or gap > 8 or (gap > 4 and previous_sentence_break)
+                                    # A sentence ending on the previous visual line is not
+                                    # enough to start a new paragraph. PDF/DOCX extraction often
+                                    # wraps normal body paragraphs line-by-line; only a clear
+                                    # paragraph gap should block later line joining.
+                                    starts_paragraph = previous_y1 is None or gap > 8
                                     span_x0s = sorted(float(s.get("bbox", [0, 0, 0, 0])[0]) for s in spans if s.get("text", "").strip())
                                     large_x_gaps = sum(1 for a, b in zip(span_x0s, span_x0s[1:]) if b - a > 85)
                                     styled_lines.append({

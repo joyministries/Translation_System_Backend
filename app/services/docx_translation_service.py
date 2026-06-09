@@ -501,8 +501,40 @@ def _paragraph_is_major_heading(para: etree._Element) -> bool:
     ))
 
 
+def _paragraph_starts_new_page_or_section(para: etree._Element) -> bool:
+    p_pr = para.find(f"{{{W}}}pPr")
+    if p_pr is None:
+        return False
+    return p_pr.find(f"{{{W}}}pageBreakBefore") is not None or p_pr.find(f"{{{W}}}sectPr") is not None
+
+
+def _looks_like_body_continuation_para(para: etree._Element, text: str) -> bool:
+    clean = re.sub(r"\s+", " ", (text or "").strip())
+    if not clean:
+        return False
+    if _paragraph_is_major_heading(para) or _paragraph_has_list_format(para):
+        return False
+    if _paragraph_starts_new_page_or_section(para):
+        return False
+    if clean.startswith(("•", "-", "–")):
+        return False
+    if re.match(r"^(?:\d+|[A-Za-z])(?:[.)]|:)\s+", clean):
+        return False
+    if clean.isupper() and len(clean) <= 160:
+        return False
+    if clean.endswith(":") and len(clean) <= 140:
+        return False
+    words = re.findall(r"[\wÀ-ÿ’'-]+", clean)
+    if len(words) <= 3:
+        return False
+    style = _paragraph_style_value(para).lower()
+    if style in {"heading1", "heading2", "heading3", "title", "subtitle"}:
+        return False
+    return True
+
+
 def _merge_lowercase_continuations(body: etree._Element, cover_end: int) -> None:
-    """Join paragraphs that are actually line continuations split by extraction/layout."""
+    """Join body paragraphs that are actually line continuations split by extraction/layout."""
     direct_paragraphs = body.findall(f"{{{W}}}p")
     cover_ids = {id(p) for p in direct_paragraphs[: cover_end + 1]} if cover_end >= 0 else set()
     paras = [p for p in body.findall(f".//{{{W}}}p") if id(p) not in cover_ids and not _is_toc_paragraph(p)]
@@ -513,18 +545,18 @@ def _merge_lowercase_continuations(body: etree._Element, cover_end: int) -> None
         if not text:
             continue
 
-        starts_as_continuation = bool(re.match(r"^[a-zà-öø-ÿ]", text, re.UNICODE))
-        if (
-            previous is not None
-            and starts_as_continuation
-            and not _paragraph_is_major_heading(previous)
-            and not _paragraph_is_major_heading(para)
-        ):
+        if previous is not None:
             prev_text = re.sub(r"\s+", " ", _paragraph_text(previous).strip())
-            if len(prev_text) >= 40:
-                # Split-line translations can add a sentence period before a lowercase
-                # continuation fragment, e.g. "kutoa njia. kwa mwingine".
-                if prev_text.endswith("."):
+            starts_lowercase = bool(re.match(r"^[a-zà-öø-ÿ]", text, re.UNICODE))
+            normal_body_continuation = (
+                len(prev_text) >= 40
+                and _looks_like_body_continuation_para(previous, prev_text)
+                and _looks_like_body_continuation_para(para, text)
+            )
+            if starts_lowercase or normal_body_continuation:
+                if prev_text.endswith(".") and starts_lowercase:
+                    # Split-line translations can add a sentence period before a lowercase
+                    # continuation fragment, e.g. "kutoa njia. kwa mwingine".
                     prev_text = prev_text[:-1]
                 _replace_paragraph_text(previous, f"{prev_text} {text}")
                 _clear_paragraph_text(para)
