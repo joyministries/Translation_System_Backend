@@ -1719,9 +1719,12 @@ def download_translation(
                             return False
                         if prev.endswith((" -", " –", "“", "\"", "(", "/", ":", ";")):
                             return True
-                        if not _re.search(r'[.!?]"?$|[.!?]”$|[.!?]\'$', prev):
-                            return True
-                        if curr[:1].islower():
+                        connector_tail = _re.search(
+                            r'\b(?:and|or|of|to|the|a|an|na|ya|wa|la|za|kwa|katika|ili|de|van|en|du|des)$',
+                            prev,
+                            _re.IGNORECASE,
+                        )
+                        if connector_tail and curr[:1].islower():
                             return True
                         return False
 
@@ -2817,7 +2820,14 @@ def download_translation(
                         elif translated_records and p and (_should_join_with_previous(translated_records[-1]["text"], p) or (paragraph_experiment_enabled and _should_join_experiment(translated_records[-1]["text"], p, current_source))) and not _last_translated_record_looks_like_subheading() and not (current_source and current_source.get("starts_paragraph")) and not _looks_like_source_subheading(p, current_source) and not _looks_like_isolated_translated_heading(p, prev_line, next_line, current_source):
                             translated_records[-1]["text"] = translated_records[-1]["text"].rstrip() + " " + p
                         else:
-                            paragraph_buffer.append(line)
+                            _flush_paragraph_buffer()
+                            source_record = _take_source_record()
+                            if source_record is None:
+                                break
+                            translated_records.append({
+                                "text": line,
+                                "source": source_record,
+                            })
 
                     _flush_paragraph_buffer()
 
@@ -4748,23 +4758,13 @@ def download_translation(
                         getattr(book, "normalized_docx_path", None)
                         and (book.file_path or "").lower().endswith(".pdf")
                     )
-                    # Clean workbook DOCX files should stay on the DOCX-preserve path:
-                    # Word/LibreOffice handles dynamic table growth, images, and borders
-                    # better than the ReportLab rebuild. PDF-normalized/flattened files
-                    # still use the deterministic rebuild unless explicitly overridden.
-                    _layout_title = ((book.title if book else "") or "").upper()
-                    _known_preserve_workbook = any(
-                        _code in _layout_title
-                        for _code in ("DC210", "BH506", "BG302", "BH302")
-                    )
+                    # Use one deterministic workbook renderer by default so first render,
+                    # cache refresh, and rebuild-style renders have the same layout contract.
+                    # The DOCX/LibreOffice preserve path is now opt-in for diagnostics only.
                     preserve_docx_layout = bool(
                         cache_variant
-                        and "rebuild-docx" not in cache_variant
                         and "preserve-docx" in cache_variant
-                    ) or (
-                        not pdf_normalized_docx
-                        and _known_preserve_workbook
-                        and not (cache_variant and "rebuild-docx" in cache_variant)
+                        and "rebuild-docx" not in cache_variant
                     )
                     try:
                         import shutil as _shutil, subprocess as _subprocess, tempfile as _tempfile
@@ -4899,22 +4899,11 @@ def download_translation(
                                     else:
                                         underline_suffix_indices.add(_current_line)
                                 if _has_numbering:
-                                    _numbered_shape = bool(
-                                        _text.endswith(':')
-                                        or '?' in _text
-                                        or _re.match(r'^(?:man|the|what|who|how|are|do|does|can|if|which|where|in)\b', _text, _re.IGNORECASE)
-                                    )
-                                    if _numbered_shape:
-                                        if _last_numbered_line is None or (_current_line - _last_numbered_line) > 3:
-                                            _number_seq = 1
-                                        else:
-                                            _number_seq += 1
-                                        numbered_line_numbers[_current_line] = _number_seq
-                                        _last_numbered_line = _current_line
-                                    else:
-                                        bullet_line_indices.add(_current_line)
-                                        _last_numbered_line = None
-                                        _number_seq = 0
+                                    # Do not synthesize numbers from DOCX numbering metadata.
+                                    # Some source paragraphs inherit numPr/list styles even when
+                                    # they are normal body text, which caused random "1." prefixes.
+                                    _last_numbered_line = None
+                                    _number_seq = 0
                                 elif _text and not _text.endswith(':') and 'heading' not in _style_name:
                                     _last_numbered_line = None
                                     _number_seq = 0
@@ -5060,6 +5049,47 @@ def download_translation(
                         if pre_body_toc_entries:
                             body_start = toc_idx + 1 + len(pre_body_toc_entries)
                     body_pairs = list(enumerate(raw_lines[body_start:], start=body_start))
+
+                    # Never allow the first chapter opener to disappear during TOC/front-matter slicing.
+                    # Some translated workbooks place CHAPTER ONE/HOOFSTUK EEN in the TOC region and
+                    # then start body text at KEY VERSE/INTRODUCTION, which drops the visible chapter title.
+                    _first_chapter_pair = next(
+                        (
+                            (_idx, _line)
+                            for _idx, _line in enumerate(raw_lines)
+                            if _is_chapter(_line)
+                            and not _is_body_chapter_reference(_line)
+                            and _re.search(r'\b(?:1|ONE|EEN|KWANZA|OKUQALA|KUTANGA|UMWE)\b', _line or '', _re.IGNORECASE)
+                        ),
+                        None,
+                    )
+                    if _first_chapter_pair is not None:
+                        _first_chapter_idx, _first_chapter_line = _first_chapter_pair
+                        _body_has_first_chapter = any(
+                            ((_line or '').strip().upper() == (_first_chapter_line or '').strip().upper())
+                            for _, _line in body_pairs[:12]
+                        )
+                        _body_starts_after_first_chapter = body_pairs and body_pairs[0][0] > _first_chapter_idx
+                        if not _body_has_first_chapter and _body_starts_after_first_chapter:
+                            body_pairs.insert(0, _first_chapter_pair)
+
+                    def _is_closing_promo_start(value):
+                        clean = (value or '').strip()
+                        return bool(_re.match(
+                            r'^(?:if\s+you\s+are\s+looking\s+for|iwe\s+unatafuta|of\s+jy\s+nou\s+soek|uma\s+ufuna|kungakhathaliseki\s+ukuthi\s+ufuna)\b',
+                            clean,
+                            _re.IGNORECASE,
+                        ))
+
+                    closing_pairs = []
+                    _closing_start_pos = next(
+                        (pos for pos, (_, _line) in enumerate(body_pairs) if _is_closing_promo_start(_line)),
+                        None,
+                    )
+                    if _closing_start_pos is not None:
+                        closing_pairs = body_pairs[_closing_start_pos:]
+                        body_pairs = body_pairs[:_closing_start_pos]
+
                     body_lines = [ln for _, ln in body_pairs]
                     has_sectioned_structure = any(
                         _re.match(r'^(SEHEMU(?:\s+YA)?|SECTION|ISIGABA|SEKSIE)\s+\d+\s*[:\-–]', ln or '', _re.IGNORECASE)
@@ -5327,33 +5357,8 @@ def download_translation(
                     _numbered_run_next = None
 
                     def _renumber_translated_list_item(value):
-                        nonlocal _numbered_run_next
-                        candidate = (value or '').strip()
-                        is_structural_heading = bool(
-                            _is_toc(candidate)
-                            or _is_chapter(candidate)
-                            or _re.match(r'^(UTANGULIZI|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|BIBLIOGRAPHY|MAREJELEO)\b', candidate, _re.IGNORECASE)
-                        )
-                        if is_structural_heading:
-                            _numbered_run_next = None
-                            return value
-                        match = _re.match(r'^(\d+)\.\s+', candidate)
-                        if not match:
-                            if not candidate.startswith('•'):
-                                _numbered_run_next = None
-                            return value
-                        current_number = int(match.group(1))
-                        if _numbered_run_next is None:
-                            _numbered_run_next = current_number + 1
-                            return value
-                        if current_number == 1 and _numbered_run_next > 4:
-                            _numbered_run_next = 2
-                            return value
-                        if current_number <= (_numbered_run_next - 1):
-                            candidate = _re.sub(r'^\d+\.\s+', f'{_numbered_run_next}. ', candidate, count=1)
-                            _numbered_run_next += 1
-                            return candidate
-                        _numbered_run_next = current_number + 1
+                        # Do not rewrite translated numbering. Random numbering regressions came
+                        # from trying to infer sequence state from inherited DOCX list metadata.
                         return value
 
                     for line_idx, ln in body_pairs:
@@ -5407,6 +5412,16 @@ def download_translation(
                             previous_was_section_heading = False
                             body_started = True
 
+                    if closing_pairs:
+                        story.append(PageBreak())
+                        for _closing_idx, (_line_idx, _closing_line) in enumerate(closing_pairs):
+                            _closing_text = _safe(_with_number_prefix(_line_idx, _closing_line))
+                            if not _closing_text:
+                                continue
+                            _style = heading_style if _closing_idx >= max(len(closing_pairs) - 3, 0) else body_style
+                            story.append(Paragraph(_closing_text, _style))
+                            _append_images_for_line(_line_idx)
+
                     def _number_pages(canvas, doc_obj):
                         canvas.saveState()
                         canvas.setFont(docx_regular_name, 8)
@@ -5415,6 +5430,9 @@ def download_translation(
 
                     doc.build(story, onFirstPage=_number_pages, onLaterPages=_number_pages)
                     content = buf.getvalue()
+
+                    # Do not replace the rebuilt closing page with LibreOffice's final DOCX page.
+                    # That page can include preceding body content, which reintroduces merged/duplicated text.
 
                     # PDF-to-DOCX conversion can drop image-based covers. For PDF-normalized
                     # books, keep the original first PDF page when it contains an image.

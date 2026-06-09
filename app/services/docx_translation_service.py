@@ -372,7 +372,7 @@ def _is_legal_credit_text(text: str) -> bool:
 def _is_tail_promo_start_text(text: str) -> bool:
     clean = re.sub(r"\s+", " ", (text or "").strip())
     return bool(re.match(
-        r"(?i)^(iwe\s+unatafuta|uma\s+ufuna|kungakhathaliseki\s+ukuthi\s+ufuna|if\s+you\s+are\s+looking\s+for)\b",
+        r"(?i)^(iwe\s+unatafuta|uma\s+ufuna|kungakhathaliseki\s+ukuthi\s+ufuna|of\s+jy\s+nou\s+soek|if\s+you\s+are\s+looking\s+for)\b",
         clean,
     ))
 
