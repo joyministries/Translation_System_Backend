@@ -457,6 +457,66 @@ def _set_compact_spacing(para: etree._Element) -> None:
     spacing.set(f"{{{W}}}after", "0")
 
 
+def _set_spacing_twips(para: etree._Element, before: str = "0", after: str = "0") -> None:
+    p_pr = _ensure_p_pr(para)
+    spacing = p_pr.find(f"{{{W}}}spacing")
+    if spacing is None:
+        spacing = etree.Element(f"{{{W}}}spacing")
+        p_pr.append(spacing)
+    spacing.set(f"{{{W}}}before", before)
+    spacing.set(f"{{{W}}}after", after)
+    spacing.set(f"{{{W}}}beforeAutospacing", "0")
+    spacing.set(f"{{{W}}}afterAutospacing", "0")
+
+
+def _paragraph_alignment(para: etree._Element) -> str:
+    jc = para.find(f"{{{W}}}pPr/{{{W}}}jc")
+    return (jc.get(f"{{{W}}}val") if jc is not None else "") or ""
+
+
+def _remove_empty_body_paragraphs(body: etree._Element, cover_end: int) -> None:
+    direct_paragraphs = body.findall(f"{{{W}}}p")
+    for idx in range(len(direct_paragraphs) - 1, -1, -1):
+        if idx <= cover_end:
+            continue
+        para = direct_paragraphs[idx]
+        if _paragraph_text(para).strip():
+            continue
+        if para.find(f".//{{{W}}}drawing") is not None or para.find(f".//{{{W}}}pict") is not None:
+            continue
+        if para.find(f"{{{W}}}pPr/{{{W}}}sectPr") is not None:
+            continue
+        parent = para.getparent()
+        if parent is not None:
+            parent.remove(para)
+
+
+def _normalize_body_spacing(body: etree._Element, cover_end: int) -> None:
+    """Remove stale source pagination spacing while preserving real structure."""
+    direct_paragraphs = body.findall(f"{{{W}}}p")
+    cover_ids = {id(p) for p in direct_paragraphs[: cover_end + 1]} if cover_end >= 0 else set()
+
+    for para in body.findall(f".//{{{W}}}p"):
+        if id(para) in cover_ids or _is_toc_paragraph(para):
+            continue
+        text = re.sub(r"\s+", " ", _paragraph_text(para).strip())
+        if not text:
+            continue
+
+        p_pr = _ensure_p_pr(para)
+        if not _is_major_body_start_text(text) and not _is_tail_promo_start_text(text):
+            _remove_child(p_pr, "pageBreakBefore")
+
+        if _is_major_body_start_text(text):
+            _set_spacing_twips(para, before="120", after="60")
+        elif _paragraph_is_major_heading(para) or (text.isupper() and len(text) <= 180):
+            _set_spacing_twips(para, before="120", after="40")
+        elif _paragraph_alignment(para) == "center":
+            _set_spacing_twips(para, before="60", after="40")
+        else:
+            _set_spacing_twips(para, before="0", after="0")
+
+
 def _normalize_flow_paragraphs(body: etree._Element, cover_end: int) -> None:
     """Prevent long quote/body text from inheriting heading spacing/pagination behavior."""
     direct_paragraphs = body.findall(f"{{{W}}}p")
@@ -894,6 +954,7 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                     _relax_pagination_constraints(body, front_matter_end)
                     _remove_body_empty_section_breaks(body, front_matter_end)
                     _tighten_page_margins(body, front_matter_end)
+                    _remove_empty_body_paragraphs(body, front_matter_end)
                     for para in _iter_translatable_paragraphs(body, cover_end):
                         current_text = _paragraph_text(para).strip()
                         if _line_looks_like_toc_title(current_text):
@@ -919,8 +980,10 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                     _center_title_paragraphs(body, cover_end)
                     _strip_front_matter_toc_dot_leaders(body, front_matter_end)
                     _increase_body_font_size(body, cover_end)
+                    _normalize_body_spacing(body, front_matter_end)
                     _normalize_flow_paragraphs(body, front_matter_end)
                     _merge_lowercase_continuations(body, front_matter_end)
+                    _normalize_body_spacing(body, front_matter_end)
                     _inline_translated_bullets(body, front_matter_end)
                     _force_tail_promo_to_own_page(body, front_matter_end)
 
