@@ -341,7 +341,7 @@ def admin_trigger_translation(
     content_type: str = "book",
     content_id: str = None,
     language_id: int = None,
-    source_language_id: int = 1,
+    source_language_id: int = 21,
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
@@ -359,6 +359,10 @@ def admin_trigger_translation(
             raise HTTPException(status_code=404, detail="Book not found")
         if not book.extracted_text:
             raise HTTPException(status_code=400, detail="Book text not extracted yet")
+        if (book.file_path or "").lower().endswith(".pdf"):
+            normalized_docx_path = getattr(book, "normalized_docx_path", None)
+            if not (normalized_docx_path and normalized_docx_path.lower().endswith(".docx") and getattr(book, "normalization_status", None) == "done"):
+                raise HTTPException(status_code=409, detail="PDF book is not ready: DOCX normalization is required before translation")
 
         translation, task_id = TranslationService.get_or_create_translation(
             db,

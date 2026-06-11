@@ -1,5 +1,8 @@
+import base64
 import io
 import os
+import re
+import requests
 import shutil
 import subprocess
 import tempfile
@@ -159,7 +162,7 @@ def _add_pdf_image_paragraph(document: Document, image_item: dict, page_width: f
 
 def _extract_pdf_lines(page) -> list[dict]:
     rows = []
-    for block in page.get_text("dict", sort=True).get("blocks", []):
+    for block_index, block in enumerate(page.get_text("dict", sort=True).get("blocks", [])):
         if block.get("type") != 0:
             continue
         for line in block.get("lines", []):
@@ -182,6 +185,7 @@ def _extract_pdf_lines(page) -> list[dict]:
                 "bold": bold_chars / total_chars >= 0.45,
                 "size": max_size,
                 "centered": abs(((bbox[0] + bbox[2]) / 2) - (page.rect.width / 2)) < page.rect.width * 0.12,
+                "block_index": block_index,
             })
     rows.sort(key=lambda item: (round(item["bbox"][1], 1), item["bbox"][0]))
     return rows
@@ -220,6 +224,119 @@ def _add_pdf_line_paragraph(document: Document, line: dict, page_index: int, all
     run.bold = bool(line.get("bold") or is_heading or is_title_page or _line_is_legal_credit(text))
 
 
+def _line_is_list_or_table_item(text: str) -> bool:
+    value = (text or "").strip()
+    return bool(re.match(r"^(?:[•\-*]|\d+[.)]|[A-Za-z][.)])\s+", value))
+
+
+def _line_ends_sentence(text: str) -> bool:
+    return bool(re.search(r"[.!?;:)\']$", (text or "").strip()))
+
+
+def _pdf_line_starts_new_paragraph(previous: dict | None, current: dict, page_width: float) -> bool:
+    if previous is None:
+        return True
+    prev_text = previous.get("text", "")
+    text = current.get("text", "")
+    if not prev_text or not text:
+        return True
+    if _line_is_chapter_heading(text) or _line_is_toc_title(text) or _line_is_allcaps_heading(text):
+        return True
+    if _line_is_legal_credit(text) or _line_is_tail_promo_start(text):
+        return True
+    if previous.get("block_index") != current.get("block_index"):
+        return True
+    if _line_is_list_or_table_item(text):
+        return True
+    if previous.get("bold") != current.get("bold") and (previous.get("bold") or current.get("bold")):
+        return True
+    prev_bbox = previous.get("bbox") or (0, 0, 0, 0)
+    bbox = current.get("bbox") or (0, 0, 0, 0)
+    prev_height = max(1.0, float(prev_bbox[3] - prev_bbox[1]))
+    vertical_gap = float(bbox[1] - prev_bbox[3])
+    if vertical_gap > prev_height * 0.70:
+        return True
+    left_delta = abs(float(bbox[0] - prev_bbox[0]))
+    if left_delta > max(18.0, page_width * 0.035) and _line_ends_sentence(prev_text):
+        return True
+    return False
+
+
+def _flush_pdf_text_group(document: Document, group: list[dict], page_index: int, allow_promo_page_break: bool = True) -> None:
+    if not group:
+        return
+    first = group[0]
+    merged = " ".join((item.get("text") or "").strip() for item in group if (item.get("text") or "").strip())
+    if not merged:
+        return
+    styled_line = dict(first)
+    styled_line["text"] = merged
+    _add_pdf_line_paragraph(document, styled_line, page_index, allow_promo_page_break=allow_promo_page_break)
+
+
+def _convertapi_base_url() -> str:
+    region = (settings.CONVERTAPI_REGION or "v2").strip().lower()
+    allowed = {"v2", "eu-v2", "uk-v2", "us-v2", "ca-v2", "as-v2", "au-v2"}
+    if region not in allowed:
+        region = "v2"
+    return f"https://{region}.convertapi.com"
+
+
+def _convertapi_pdf_to_docx(input_path: str) -> str | None:
+    token = (settings.CONVERTAPI_TOKEN or "").strip()
+    if not token:
+        return None
+
+    output_path = os.path.join(settings.STORAGE_ROOT, f"{uuid.uuid4()}.docx")
+    url = f"{_convertapi_base_url()}/convert/pdf/to/docx"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/octet-stream, application/json",
+    }
+    data = {
+        "StoreFile": "false",
+        "OcrMode": "never",
+        "Wysiwyg": "false",
+        "Timeout": "600",
+    }
+    with open(input_path, "rb") as source_file:
+        response = requests.post(
+            url,
+            headers=headers,
+            files={"File": (os.path.basename(input_path), source_file, "application/pdf")},
+            data=data,
+            timeout=660,
+        )
+    response.raise_for_status()
+
+    content_type = (response.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        payload = response.json()
+        files = payload.get("Files") or []
+        if not files:
+            raise ValueError("ConvertAPI response did not include converted files")
+        first_file = files[0]
+        if first_file.get("FileData"):
+            content = base64.b64decode(first_file["FileData"])
+        elif first_file.get("Url"):
+            file_response = requests.get(first_file["Url"], timeout=660)
+            file_response.raise_for_status()
+            content = file_response.content
+        else:
+            raise ValueError("ConvertAPI file response did not include FileData or Url")
+    else:
+        content = response.content
+
+    if not content or len(content) < 500:
+        raise ValueError("ConvertAPI returned an empty or invalid DOCX")
+    if not content.startswith(b"PK"):
+        raise ValueError("ConvertAPI response is not a DOCX zip file")
+
+    with open(output_path, "wb") as out_file:
+        out_file.write(content)
+    return os.path.basename(output_path)
+
+
 def _structured_selectable_pdf_to_docx(input_path: str) -> str:
     """Create a DOCX from selectable PDF text with workbook-aware page/style structure."""
     if not _pdf_has_selectable_text(input_path):
@@ -243,12 +360,23 @@ def _structured_selectable_pdf_to_docx(input_path: str) -> str:
                 image_items = images
                 items = sorted(line_items + image_items, key=lambda item: (round(item["bbox"][1], 1), item["bbox"][0]))
                 text_index = 0
+                text_group = []
+                previous_text_item = None
                 for item in items:
                     if item["kind"] == "image":
+                        _flush_pdf_text_group(document, text_group, page_index, allow_promo_page_break=text_index > len(text_group))
+                        text_group = []
+                        previous_text_item = None
                         _add_pdf_image_paragraph(document, item, page.rect.width)
                     else:
-                        _add_pdf_line_paragraph(document, item, page_index, allow_promo_page_break=text_index > 0)
+                        if _pdf_line_starts_new_paragraph(previous_text_item, item, page.rect.width):
+                            _flush_pdf_text_group(document, text_group, page_index, allow_promo_page_break=text_index > len(text_group))
+                            text_group = [item]
+                        else:
+                            text_group.append(item)
+                        previous_text_item = item
                         text_index += 1
+                _flush_pdf_text_group(document, text_group, page_index, allow_promo_page_break=text_index > len(text_group))
 
                 if page_index == 0 and not lines and not images:
                     para = document.add_paragraph()
@@ -317,10 +445,15 @@ def normalize_upload_to_docx(file_path: str, mime_type: str) -> tuple[str | None
 
     try:
         if mime_type == "application/pdf" or file_path.lower().endswith(".pdf"):
-            converted = _run_libreoffice_convert(input_path, "docx")
-            if converted and _docx_has_enough_extractable_text(converted):
-                return converted, None
-            return _structured_selectable_pdf_to_docx(input_path), None
+            convertapi_error = None
+            try:
+                converted = _convertapi_pdf_to_docx(input_path)
+                if converted and _docx_has_enough_extractable_text(converted):
+                    return converted, None
+            except Exception as exc:
+                convertapi_error = str(exc)
+            converted = _structured_selectable_pdf_to_docx(input_path)
+            return converted, convertapi_error
 
         converted = _run_libreoffice_convert(input_path, "docx")
         if converted:

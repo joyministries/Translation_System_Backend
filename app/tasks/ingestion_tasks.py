@@ -30,14 +30,15 @@ def extract_pdf_text(self, book_id: str, file_path: str):
         book.normalization_status = "done" if normalized_docx else "failed"
         book.normalization_error = normalization_error
 
-        if normalized_docx:
-            from app.services.docx_translation_service import extract_docx_translation_text
-            with open(get_file_path(normalized_docx), "rb") as docx_file:
-                text = extract_docx_translation_text(docx_file.read())
-            page_count = None
-        else:
-            start_page = book.first_content_page or 1
-            text, page_count = extract_text_from_pdf(file_path, start_page=start_page)
+        if not normalized_docx:
+            book.extraction_status = "failed"
+            db.commit()
+            raise RuntimeError(f"PDF-to-DOCX normalization failed: {normalization_error or 'unknown error'}")
+
+        from app.services.docx_translation_service import extract_docx_translation_text
+        with open(get_file_path(normalized_docx), "rb") as docx_file:
+            text = extract_docx_translation_text(docx_file.read())
+        page_count = None
 
         book.extracted_text = text
         book.page_count = page_count

@@ -313,6 +313,10 @@ async def trigger_translation(
 
         if not book.extracted_text:
             raise HTTPException(status_code=400, detail="Book text not extracted yet")
+        if (book.file_path or "").lower().endswith(".pdf"):
+            normalized_docx_path = getattr(book, "normalized_docx_path", None)
+            if not (normalized_docx_path and normalized_docx_path.lower().endswith(".docx") and getattr(book, "normalization_status", None) == "done"):
+                raise HTTPException(status_code=409, detail="PDF book is not ready: DOCX normalization is required before translation")
 
         translation, task_id = TranslationService.get_or_create_translation(
             db,
@@ -478,8 +482,29 @@ def download_translation(
         book = db.query(Book).filter(Book.id == str(translation.content_id)).first()
         source_docx_path = (getattr(book, "normalized_docx_path", None) or book.file_path) if book else None
         has_source_docx = bool(source_docx_path and source_docx_path.endswith(".docx"))
-        _route_log.getLogger(__name__).warning(f"pdf branch entered file_path={book.file_path if book else None} normalized_docx_path={source_docx_path if has_source_docx else None}")
         if book and book.file_path and book.file_path.endswith(".pdf") and not has_source_docx:
+            try:
+                from app.services.document_conversion_service import normalize_upload_to_docx
+                normalized_docx, normalization_error = normalize_upload_to_docx(book.file_path, "application/pdf")
+                if normalized_docx:
+                    book.normalized_docx_path = normalized_docx
+                    book.normalized_source_type = "application/pdf"
+                    book.normalization_status = "done"
+                    book.normalization_error = normalization_error
+                    db.commit()
+                    source_docx_path = normalized_docx
+                    has_source_docx = True
+                else:
+                    book.normalization_status = "failed"
+                    book.normalization_error = normalization_error
+                    db.commit()
+            except Exception as _norm_exc:
+                import logging as _norm_logging
+                _norm_logging.getLogger(__name__).warning(f"On-demand PDF normalization failed: {_norm_exc}")
+        if book and (book.file_path or "").lower().endswith(".pdf") and not has_source_docx:
+            raise HTTPException(status_code=409, detail="PDF book cannot be rendered until DOCX normalization succeeds")
+        _route_log.getLogger(__name__).warning(f"pdf branch entered file_path={book.file_path if book else None} normalized_docx_path={source_docx_path if has_source_docx else None}")
+        if False and book and book.file_path and book.file_path.endswith(".pdf") and not has_source_docx:
             try:
                 import os as _os, io as _io
                 cache_suffix = f"_translated_{translation.language_id}"
@@ -534,7 +559,7 @@ def download_translation(
                     )
 
                     introduction_pattern = _re.compile(
-                        r'^(INTRODUCTION|NHANGANYAYA|ISINGENISO|ISANDULELO|INTRODUCCI[ÓO]N|UTANGULIZI|INTRODUÇÃO|EINFÜHRUNG)\b',
+                        r'^(INTRODUCTION|COURSE\s+INTRODUCTION|KURSUS\s+INLEIDING|NHANGANYAYA|ISINGENISO|ISANDULELO|INTRODUCCI[ÓO]N|UTANGULIZI|INTRODUÇÃO|EINFÜHRUNG)\b',
                         _re.IGNORECASE,
                     )
 
@@ -2493,7 +2518,9 @@ def download_translation(
                                     if _toc_entry_needs_completion(_old) and len((_new or "").split()) > len((_old or "").split()):
                                         return True
                                 return False
-                            if len(body_toc_entries) > len(toc_entries) or _toc_entries_are_more_complete(body_toc_entries, toc_entries):
+                            if (not toc_entries or len(toc_entries) < 4) and len(body_toc_entries) > len(toc_entries):
+                                toc_entries = body_toc_entries
+                            elif _toc_entries_are_more_complete(body_toc_entries, toc_entries):
                                 toc_entries = body_toc_entries
                         if toc_entries:
                             intro_heading_after_toc = next(
@@ -2511,7 +2538,32 @@ def download_translation(
                             )
                         intro_title_text = intro_heading_after_toc
                         if toc_entries and toc_title_text:
-                            render_toc_entries = toc_entries
+                            def _final_workbook_toc_cleanup(_entries):
+                                _cleaned_entries = []
+                                _seen_entries = set()
+                                _seen_chapter = False
+                                _chapter_re = _re.compile(r'^(?:CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ)\s+(?:\d+|[^-–]{1,40})\s*[-–:]\s+\D', _re.IGNORECASE)
+                                _section_re = _re.compile(r'^(?:SECTION|ISIGABA|SEKCJA|SEKSHENI|SIGABA|SEHEMU(?:\s+YA)?|AFDELING)\s+\d+\s*[:\-–]?\s*\D', _re.IGNORECASE)
+                                _terminal_re = _re.compile(r'^(?:CONCLUSION|APPENDIX|AANHANGSEL|BIBLIOGRAPHY|BHAIBHERI|MAREJELEO|MHEDZISO|HITIMISHO|MABHUKU EMABHUKU|ISITHASISELO|PREFACE|ISANDULELO)\b', _re.IGNORECASE)
+                                for _entry in _entries or []:
+                                    _value = _clean_toc_entry_text(_entry)
+                                    if not _value:
+                                        continue
+                                    _is_intro = bool(introduction_pattern.match(_value)) and not _seen_chapter
+                                    _is_major = _is_intro or bool(_chapter_re.match(_value)) or bool(_section_re.match(_value)) or bool(_terminal_re.match(_value))
+                                    if not _is_major:
+                                        continue
+                                    if _seen_chapter and introduction_pattern.match(_value):
+                                        continue
+                                    _key = _re.sub(r'\s+', ' ', _value).strip().upper()
+                                    if _key in _seen_entries:
+                                        continue
+                                    _seen_entries.add(_key)
+                                    _cleaned_entries.append(_value)
+                                    if _chapter_re.match(_value) or _section_re.match(_value):
+                                        _seen_chapter = True
+                                return _cleaned_entries
+                            render_toc_entries = _final_workbook_toc_cleanup(toc_entries) or toc_entries
                             import logging as _log
                             _log.getLogger(__name__).warning(f'workbook front matter intro={intro_heading_after_toc!r} toc_count={len(toc_entries)} title={toc_title_text!r}')
                             title_safe = _normalize_render_quotes(toc_title_text).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
@@ -4741,7 +4793,8 @@ def download_translation(
                 except Exception:
                     pass
 
-                cache_suffix = f"_translated_{translation.language_id}"
+                renderer_cache_version = "renderer_v18"
+                cache_suffix = f"_translated_{translation.language_id}_{renderer_cache_version}_{translation.id}"
                 if cache_variant:
                     cache_suffix = f"{cache_suffix}_{cache_variant}"
                 cached_pdf_key = source_docx_path.replace(".docx", f"{cache_suffix}.pdf")
@@ -4851,18 +4904,33 @@ def download_translation(
 
                     def _is_toc(line):
                         value = (line or '').strip().upper()
-                        return value in {"YALIYOMO", "ORODHA YA YALIYOMO", "TABLE OF CONTENTS", "OKUQUKETHWE", "ZVIRI MUKATI"} or "YALIYOMO" in value and len(value) <= 40
+                        return (
+                            value in {"YALIYOMO", "ORODHA YA YALIYOMO", "TABLE OF CONTENTS", "INHOUDSOPGAWE", "OKUQUKETHWE", "ZVIRI MUKATI", "ATỌKA AKOONU", "TABLE ƊE ƊEƊƊI"}
+                            or "YALIYOMO" in value and len(value) <= 40
+                            or "INHOUDSOPGAWE" in value and len(value) <= 40
+                            or "ATỌKA" in value and "AKOONU" in value and len(value) <= 60
+                            or "TABLE ƊE" in value and len(value) <= 60
+                        )
 
-                    chapter_re = _re.compile(r'^(?:CHAPTER\s+(?:\d+|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|ELEVEN|TWELVE)\s*[-–:]|SURA(?:\s+YA)?\s+(?:\d+|KWANZA|PILI|TATU|NNE|TANO|SITA|SABA|NANE|TISA|KUMI(?:\s+NA\s+\S+)?)\s*[-–:]|ISAHLUKO\s+[^-–:]{1,80}\s*[-–:]|HOOFSTUK\s+\S+\s*[-–:]|CHITSAUKO\s+\S+\s*[-–:]|CAP[IÍ]TULO\s+\S+\s*[-–:]|SEHEMU(?:\s+YA)?\s+\d+\s*[:\-–]|SECTION\s+\d+\s*[:\-–]|SEKSIE\s+\d+\s*[:\-–]|ISIGABA\s+\d+\s*[:\-–])', _re.IGNORECASE)
+                    chapter_re = _re.compile(r'^(?:CHAPTER\s+(?:\d+|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|ELEVEN|TWELVE)\s*[-–:]|SURA(?:\s+YA)?\s+(?:\d+|KWANZA|PILI|TATU|NNE|TANO|SITA|SABA|NANE|TISA|KUMI(?:\s+NA\s+\S+)?)\s*[-–:]|ISAHLUKO\s+[^-–:]{1,80}\s*[-–:]|HOOFSTUK\s+\S+\s*[-–:]|CHITSAUKO\s+[^-–:]{1,80}\s*[-–:]|CAP[IÍ]TULO\s+\S+\s*[-–:]|SEHEMU(?:\s+YA)?\s+\d+\s*[:\-–]|SECTION\s+\d+\s*[:\-–]|SEKSIE\s+\d+\s*[:\-–]|AFDELING\s+\d+\s*[:\-–]|AP[ÁA]\s+\d+\s*[:\-–]|TAŊRE\s+\d+\s*[:\-–]|OR[IÍ]\s+\d+\s*[:\-–]|FAANDAARE\s+\d+\s*[:\-–]|ISIGABA\s+\d+\s*[:\-–])', _re.IGNORECASE)
 
                     def _is_chapter(line):
                         return bool(chapter_re.match(line or ''))
 
-                    def _is_body_chapter_reference(line):
+                    def _is_body_chapter_reference(line, line_idx=None):
                         value = (line or '').strip()
-                        return bool(_re.match(r'^(?:SURA(?:\s+YA)?|CHAPTER|ISAHLUKO|HOOFSTUK|CHITSAUKO)\s+\d+\s*[-–]\s*\d+\s*:', value, _re.IGNORECASE))
+                        if _re.match(r'^(?:SURA(?:\s+YA)?|CHAPTER|ISAHLUKO|HOOFSTUK|CHITSAUKO)\s+(?:\d+|[lI])\s*[-–]\s*\d+\s*:', value, _re.IGNORECASE):
+                            return True
+                        if _re.match(r'^(?:SURA(?:\s+YA)?|CHAPTER|ISAHLUKO|HOOFSTUK|CHITSAUKO)\s+\d+\s*:', value, _re.IGNORECASE):
+                            if line_idx is None:
+                                return True
+                            return _source_heading_level_for_line(line_idx) not in (1, 2)
+                        return False
 
                     image_by_line = {}
+                    original_text_by_line = {}
+                    legal_line_indices = set()
+                    source_legal_lines = []
                     docx_cover_image_candidates = []
                     bold_line_indices = set()
                     numbered_line_numbers = {}
@@ -4870,13 +4938,16 @@ def download_translation(
                     underline_prefix_indices = set()
                     underline_suffix_indices = set()
                     table_by_line = {}
+                    translated_table_line_counts = {}
+                    source_heading_level_by_line = {}
                     skip_table_line_indices = set()
                     try:
                         from docx import Document as _DocxDocument
                         from docx.text.paragraph import Paragraph as _DocxParagraph
                         from docx.table import Table as _DocxTable
 
-                        _docx_doc = _DocxDocument(f"/app/storage/{book.file_path}")
+                        _docx_source_path = source_docx_path or book.file_path
+                        _docx_doc = _DocxDocument(f"/app/storage/{_docx_source_path}")
                         _line_cursor = 0
                         _number_seq = 0
                         _last_numbered_line = None
@@ -4888,9 +4959,21 @@ def download_translation(
                             _style_name = (_para.style.name or '').lower() if _para.style else ''
                             _has_bold = any(bool(run.bold) for run in _para.runs if (run.text or '').strip())
                             _has_numbering = bool(_para._p.xpath('.//*[local-name()="numPr"]')) or _style_name.startswith('list')
+                            _heading_match = _re.search(r"heading\s*(\d+)", _style_name or "")
                             _underlined_tab_runs = [run.text for run in _para.runs if run.underline and '\t' in (run.text or '')]
                             _current_line = _line_cursor
                             if _text:
+                                original_text_by_line[_current_line] = _text
+                                if _heading_match:
+                                    try:
+                                        source_heading_level_by_line[_current_line] = int(_heading_match.group(1))
+                                    except Exception:
+                                        pass
+                                elif _style_name == "title":
+                                    source_heading_level_by_line[_current_line] = 0
+                                if _re.search(r'©|copyright|all rights reserved|scripture quotations|thomas nelson|international bible society|tyndale house|used by permission', _text, _re.IGNORECASE):
+                                    legal_line_indices.add(_current_line)
+                                    source_legal_lines.append(_text)
                                 if 'heading' in _style_name or _has_bold or (_text.isupper() and len(_text) <= 120):
                                     bold_line_indices.add(_current_line)
                                 if _underlined_tab_runs:
@@ -4965,6 +5048,9 @@ def download_translation(
                                     skip_table_line_indices.update(_table_indices)
                     except Exception:
                         image_by_line = {}
+                        original_text_by_line = {}
+                        legal_line_indices = set()
+                        source_legal_lines = []
                         docx_cover_image_candidates = []
                         bold_line_indices = set()
                         numbered_line_numbers = {}
@@ -4972,10 +5058,82 @@ def download_translation(
                         underline_prefix_indices = set()
                         underline_suffix_indices = set()
                         table_by_line = {}
+                        translated_table_line_counts = {}
+                        source_heading_level_by_line = {}
                         skip_table_line_indices = set()
 
+                    def _is_legal_text(value):
+                        return bool(_re.search(
+                            r'©|copyright|kopiereg|all rights reserved|alle regte voorbehou|no part of this publication|geen deel van hierdie publikasie|scripture quotations|skrifaanhalings|thomas nelson|international bible society|internasionale bybelgenootskap|tyndale house|used by permission|gebruik met toestemming',
+                            value or '',
+                            _re.IGNORECASE,
+                        ))
+
+                    def _pick_source_legal_line(value):
+                        clean = (value or '').strip()
+                        lower = clean.lower()
+                        candidates = source_legal_lines or []
+                        if not candidates:
+                            return None
+                        checks = []
+                        if '©' in clean and ('team impact' in lower or 'christelike universiteit' in lower or 'christian university' in lower):
+                            checks.append(lambda src: '©' in src and 'team impact' in src.lower())
+                        if 'thomas nelson' in lower:
+                            checks.append(lambda src: 'thomas nelson' in src.lower())
+                        if 'international bible society' in lower or 'internasionale bybelgenootskap' in lower:
+                            checks.append(lambda src: 'international bible society' in src.lower())
+                        if 'tyndale' in lower:
+                            checks.append(lambda src: 'tyndale' in src.lower())
+                        if 'all rights reserved' in lower or 'alle regte voorbehou' in lower or 'no part of this publication' in lower or 'geen deel van hierdie publikasie' in lower:
+                            checks.append(lambda src: 'all rights reserved' in src.lower() or 'no part of this publication' in src.lower())
+                        if 'copyright' in lower or 'kopiereg' in lower:
+                            checks.append(lambda src: 'copyright' in src.lower())
+                        if 'scripture quotations' in lower or 'skrifaanhalings' in lower:
+                            checks.append(lambda src: 'scripture quotations' in src.lower())
+                        for check in checks:
+                            for src in candidates:
+                                if check(src):
+                                    return src
+                        return None
+
+                    source_to_trans_idx = {}
+                    trans_to_source_idx = {}
+                    _line_shift = 0
+                    for _src_idx in sorted(original_text_by_line):
+                        _src_text = (original_text_by_line.get(_src_idx) or "").strip()
+                        _candidate_idx = _src_idx - _line_shift
+                        if _src_text.lower() in {"by"} and (_candidate_idx >= len(raw_lines) or (raw_lines[_candidate_idx] or "").strip().lower() != "by"):
+                            _line_shift += 1
+                            continue
+                        if 0 <= _candidate_idx < len(raw_lines):
+                            source_to_trans_idx[_src_idx] = _candidate_idx
+                            trans_to_source_idx[_candidate_idx] = _src_idx
+
+                    def _source_heading_level_for_line(line_idx):
+                        if line_idx in source_heading_level_by_line:
+                            return source_heading_level_by_line.get(line_idx)
+                        _src_idx = trans_to_source_idx.get(line_idx)
+                        if _src_idx is None:
+                            return None
+                        return source_heading_level_by_line.get(_src_idx)
+
+                    legal_override_by_line = {}
+                    for _line_idx, _line in enumerate(raw_lines):
+                        if _is_legal_text(_line):
+                            _source_legal = original_text_by_line.get(_line_idx) if _line_idx in legal_line_indices else None
+                            if not _source_legal:
+                                _source_legal = _pick_source_legal_line(_line)
+                            if _source_legal:
+                                legal_override_by_line[_line_idx] = _source_legal.strip()
+
+                    def _render_line_text(line_idx, line):
+                        value = legal_override_by_line.get(line_idx, (line or '').strip())
+                        value = _re.sub(r'\bSpan Impak Christelike Universiteit\b', 'Team Impact Christian University', value, flags=_re.IGNORECASE)
+                        value = _re.sub(r'\bTeam Impact Christelike Universiteit\b', 'Team Impact Christian University', value, flags=_re.IGNORECASE)
+                        return value
+
                     def _with_number_prefix(line_idx, line):
-                        value = (line or '').strip()
+                        value = _render_line_text(line_idx, line)
                         if not value:
                             return line
                         # Normalize OCR/translation confusion of numeric 1 as lowercase L.
@@ -4983,7 +5141,7 @@ def download_translation(
                         is_structural_heading = bool(
                             _is_toc(value)
                             or _is_chapter(value)
-                            or _re.match(r'^(UTANGULIZI|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|BIBLIOGRAPHY|MAREJELEO)\b', value, _re.IGNORECASE)
+                            or _re.match(r'^(UTANGULIZI|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|KURSUS\s+INLEIDING|BIBLIOGRAPHY|MAREJELEO)\b', value, _re.IGNORECASE)
                         )
                         if is_structural_heading:
                             return value
@@ -5003,8 +5161,16 @@ def download_translation(
                             return f"• {value}"
                         return value
 
-                    exam_idx = next((i for i, ln in enumerate(raw_lines) if i > 1 and _is_exam(ln)), None)
-                    toc_idx = next((i for i, ln in enumerate(raw_lines) if i > (exam_idx or 1) and _is_toc(ln)), None)
+                    _source_exam_idx = next((_idx for _idx, _txt in sorted(original_text_by_line.items()) if _idx > 1 and _is_exam(_txt)), None)
+                    _source_toc_idx = next((_idx for _idx, _txt in sorted(original_text_by_line.items()) if _idx > (_source_exam_idx or 1) and _is_toc(_txt)), None)
+                    exam_idx = source_to_trans_idx.get(_source_exam_idx) if _source_exam_idx is not None else None
+                    toc_idx = source_to_trans_idx.get(_source_toc_idx) if _source_toc_idx is not None else None
+                    if exam_idx is None:
+                        exam_idx = next((i for i, ln in enumerate(raw_lines) if i > 1 and _is_exam(ln)), None)
+                    if toc_idx is not None and (toc_idx >= len(raw_lines) or not _is_toc(raw_lines[toc_idx])):
+                        toc_idx = None
+                    if toc_idx is None:
+                        toc_idx = next((i for i, ln in enumerate(raw_lines) if i > (exam_idx or 1) and _is_toc(ln)), None)
                     if exam_idx is None:
                         exam_idx = min(2, len(raw_lines))
                     if toc_idx is None:
@@ -5018,14 +5184,24 @@ def download_translation(
                     if exam_lines:
                         _updated_rel_idx = None
                         for _rel_i, _front_line in enumerate(exam_lines):
-                            if _re.search(r'\b(UPDATED|IMESASISHWA|OPGEDATEER|YAKAGADZIRIDZWA)\b', _front_line or '', _re.IGNORECASE):
+                            if _re.search(r'\b(UPDATED|IMESASISHWA|OPGEDATEER|YAKAGADZIRIDZWA|ÀTÚNṢE|ATUNSE|HESƊITINAAMA|HESƊITINAA|HESƊITINDE)\b', _front_line or '', _re.IGNORECASE):
                                 _updated_rel_idx = _rel_i
-                        if _updated_rel_idx is not None and _updated_rel_idx + 1 < len(exam_lines):
-                            publication_lines = exam_lines[_updated_rel_idx + 1:]
-                            exam_lines = exam_lines[:_updated_rel_idx + 1]
+                        if _updated_rel_idx is not None:
+                            _publication_rel_start = _updated_rel_idx
+                            for _candidate_idx in range(max(0, _updated_rel_idx - 3), _updated_rel_idx + 1):
+                                _candidate = exam_lines[_candidate_idx] or ''
+                                if _re.search(r'(TEAM\s+IMPACT|DUƊAL|JAAMI|UNIVERSITY|YUNIFÁSÍTÌ|CHRISTIAN|KIRISTA|KERECEE)', _candidate, _re.IGNORECASE):
+                                    _publication_rel_start = _candidate_idx
+                                    break
+                            publication_lines = exam_lines[_publication_rel_start:]
+                            exam_lines = exam_lines[:_publication_rel_start]
 
                     body_start = toc_idx + 1 if toc_idx < len(raw_lines) else toc_idx
                     pre_body_toc_entries = []
+
+                    def _is_section_heading_line(value):
+                        return bool(_re.match(r'^(SEHEMU(?:\s+YA)?|SECTION|ISIGABA|SEKSIE|AFDELING|AP[ÁA]|TAŊRE)\s+\d+\s*[:\-–]', value or '', _re.IGNORECASE))
+
                     if toc_idx < len(raw_lines):
                         for _toc_line in raw_lines[toc_idx + 1:]:
                             _toc_value = (_toc_line or "").strip()
@@ -5035,20 +5211,35 @@ def download_translation(
                                 continue
                             if pre_body_toc_entries and _toc_value.upper() == pre_body_toc_entries[0].upper():
                                 break
-                            if pre_body_toc_entries and len(pre_body_toc_entries) >= 2 and not (
-                                _is_chapter(_toc_value)
-                                or _re.match(r'^(UTANGULIZI|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|BIBLIOGRAPHY|MAREJELEO|CONCLUSION|HITIMISHO)\b', _toc_value, _re.IGNORECASE)
-                            ):
+                            if not pre_body_toc_entries and _is_section_heading_line(_toc_value):
+                                pre_body_toc_entries.append(_toc_value)
+                                body_start = toc_idx + 2
                                 break
-                            if _is_chapter(_toc_value) or _re.match(r'^(UTANGULIZI|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|BIBLIOGRAPHY|MAREJELEO|CONCLUSION|HITIMISHO)\b', _toc_value, _re.IGNORECASE):
+                            if _is_chapter(_toc_value) or _re.match(r'^(UTANGULIZI|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|KURSUS\s+INLEIDING|BIBLIOGRAPHY|MAREJELEO|CONCLUSION|HITIMISHO)\b', _toc_value, _re.IGNORECASE):
                                 pre_body_toc_entries.append(_toc_value)
                                 continue
                             if not pre_body_toc_entries:
                                 break
                             break
-                        if pre_body_toc_entries:
+                        if pre_body_toc_entries and not _is_section_heading_line(pre_body_toc_entries[0]):
                             body_start = toc_idx + 1 + len(pre_body_toc_entries)
+                    if pdf_normalized_docx:
+                        # DOCX-converted PDFs often contain only a TOC title, not real TOC rows.
+                        # Use copied headings for the synthesized TOC, but keep those headings in the body.
+                        body_start = toc_idx + 1 if toc_idx < len(raw_lines) else toc_idx
+                        pre_body_toc_entries = []
                     body_pairs = list(enumerate(raw_lines[body_start:], start=body_start))
+
+                    _source_body_start_idx = None
+                    if _source_toc_idx is not None:
+                        for _src_idx in sorted(original_text_by_line):
+                            if _src_idx <= _source_toc_idx:
+                                continue
+                            if source_heading_level_by_line.get(_src_idx) in (1, 2):
+                                _source_body_start_idx = source_to_trans_idx.get(_src_idx)
+                                break
+                    if _source_body_start_idx is not None and body_pairs and _source_body_start_idx < body_pairs[0][0]:
+                        body_pairs = [(i, raw_lines[i]) for i in range(_source_body_start_idx, body_pairs[0][0]) if i < len(raw_lines)] + body_pairs
 
                     # Never allow the first chapter opener to disappear during TOC/front-matter slicing.
                     # Some translated workbooks place CHAPTER ONE/HOOFSTUK EEN in the TOC region and
@@ -5058,7 +5249,7 @@ def download_translation(
                             (_idx, _line)
                             for _idx, _line in enumerate(raw_lines)
                             if _is_chapter(_line)
-                            and not _is_body_chapter_reference(_line)
+                            and not _is_body_chapter_reference(_line, _idx)
                             and _re.search(r'\b(?:1|ONE|EEN|KWANZA|OKUQALA|KUTANGA|UMWE)\b', _line or '', _re.IGNORECASE)
                         ),
                         None,
@@ -5092,35 +5283,67 @@ def download_translation(
 
                     body_lines = [ln for _, ln in body_pairs]
                     has_sectioned_structure = any(
-                        _re.match(r'^(SEHEMU(?:\s+YA)?|SECTION|ISIGABA|SEKSIE)\s+\d+\s*[:\-–]', ln or '', _re.IGNORECASE)
-                        for ln in body_lines
+                        _re.match(r'^(SEHEMU(?:\s+YA)?|SECTION|ISIGABA|SEKSIE|AFDELING|AP[ÁA]|TAŊRE)\s+\d+\s*[:\-–]', ln or '', _re.IGNORECASE)
+                        for ln in (body_lines + pre_body_toc_entries)
                     )
+                    def _source_level_looks_like_heading(value, source_level):
+                        clean = (value or '').strip()
+                        if source_level not in (1, 2) or not clean:
+                            return False
+                        if _is_chapter(clean) or _is_section_heading_line(clean):
+                            return True
+                        if _re.match(r'^(?:PREFACE|INTRODUCTION|NHANGANYAYA|UTANGULIZI|ISINGENISO|DIBAJI|KURSUS\s+INLEIDING|BIBLIOGRAPHY|BHAIBHERI|MAREJELEO|CONCLUSION|MHEDZISO|HITIMISHO)\s*$', clean, _re.IGNORECASE):
+                            return True
+                        return bool(clean.isupper() and len(clean) <= 120)
+
+                    def _is_major_start_heading(value, line_idx=None):
+                        clean = (value or '').strip()
+                        if not clean or _is_body_chapter_reference(clean, line_idx):
+                            return False
+                        # Sections are headings but not standalone page starts in the source books.
+                        return bool(
+                            (_is_chapter(clean) and not _is_section_heading_line(clean) and not _is_body_chapter_reference(clean, line_idx))
+                            or _re.match(
+                                r'^(?:PREFACE|INTRODUCTION|NHANGANYAYA|UTANGULIZI|ISINGENISO|DIBAJI|KURSUS\s+INLEIDING|BIBLIOGRAPHY|BHAIBHERI|MAREJELEO|CONCLUSION|MHEDZISO|HITIMISHO)\s*$',
+                                clean,
+                                _re.IGNORECASE,
+                            )
+                        )
+
                     def _is_render_heading(line, line_idx=None):
                         value = (line or '').strip()
                         if not value:
                             return False
-                        if _re.match(r'^(UTANGULIZI|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|BIBLIOGRAPHY|MAREJELEO)\b', value, _re.IGNORECASE):
+                        _source_level = _source_heading_level_for_line(line_idx)
+                        if _source_level_looks_like_heading(value, _source_level):
+                            return True
+                        if _re.match(r'^(UTANGULIZI|NHANGANYAYA|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|KURSUS\s+INLEIDING|BIBLIOGRAPHY|BHAIBHERI|MAREJELEO|CONCLUSION|MHEDZISO|HITIMISHO)\b', value, _re.IGNORECASE):
                             return bool(value.isupper() or line_idx in bold_line_indices or len(value.split()) <= 3)
                         if not _is_chapter(value):
                             return False
                         if value.isupper():
                             return True
-                        if has_sectioned_structure and _is_chapter(value) and not _is_body_chapter_reference(value):
+                        if has_sectioned_structure and _is_chapter(value) and not _is_body_chapter_reference(value, line_idx):
                             return True
-                        return bool(_re.match(r'^(SEHEMU|SECTION|ISIGABA|SEKSIE)\b', value, _re.IGNORECASE))
+                        return bool(_re.match(r'^(SEHEMU|SECTION|ISIGABA|SEKSIE|AFDELING)\b', value, _re.IGNORECASE))
 
                     def _is_toc_entry_heading(line, line_idx=None):
                         value = (line or '').strip()
-                        if not value:
+                        if not value or _is_body_chapter_reference(value, line_idx):
                             return False
-                        if _is_body_chapter_reference(value):
-                            return False
-                        if value.isupper():
-                            return bool(
-                                _is_chapter(value)
-                                or _re.match(r'^(UTANGULIZI|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|BIBLIOGRAPHY|MAREJELEO)\b', value, _re.IGNORECASE)
-                            )
-                        if _is_chapter(value) and has_sectioned_structure:
+                        # For DOCX-derived books, synthesize TOCs from source Heading 1 only.
+                        # This prevents translated body paragraphs or Heading 2 subheads from
+                        # entering the TOC when the translated TOC page is incomplete.
+                        if line_idx is not None and trans_to_source_idx.get(line_idx) is not None:
+                            if _source_heading_level_for_line(line_idx) != 1:
+                                return False
+                        if _is_chapter(value) or _is_section_heading_line(value):
+                            return True
+                        if _re.match(
+                            r'^(UTANGULIZI|NHANGANYAYA|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|COURSE\s+INTRODUCTION|KURSUS\s+INLEIDING|NHANGANYAYA\s+YEKOSI|BIBLIOGRAPHY|BHAIBHERI|MAREJELEO|CONCLUSION|MHEDZISO|HITIMISHO|APPENDIX|AANHANGSEL|CHIMWE\s+CHINHU\s+CHEKUWEDZERA)\b',
+                            value,
+                            _re.IGNORECASE,
+                        ):
                             return True
                         return False
 
@@ -5132,6 +5355,37 @@ def download_translation(
                                     toc_entries.append(ln)
                     if not toc_entries and toc_idx < len(raw_lines):
                         toc_entries = [ln for ln in raw_lines[toc_idx + 1: min(toc_idx + 20, len(raw_lines))] if ln]
+
+                    def _is_synthesized_toc_heading(value, line_idx=None):
+                        clean = (value or "").strip()
+                        if not clean or _is_body_chapter_reference(clean, line_idx):
+                            return False
+                        if _is_closing_promo_start(clean):
+                            return False
+                        if _is_section_heading_line(clean) or _is_chapter(clean):
+                            return True
+                        return bool(_re.match(
+                            r'^(?:PREFACE|INTRODUCTION|NHANGANYAYA|UTANGULIZI|ISINGENISO|DIBAJI|KURSUS\s+INLEIDING|BIBLIOGRAPHY|BHAIBHERI|MAREJELEO|CONCLUSION|MHEDZISO|HITIMISHO)\s*$',
+                            clean,
+                            _re.IGNORECASE,
+                        ))
+
+                    if pdf_normalized_docx:
+                        synthesized_toc_entries = []
+                        seen_synthesized_toc = set()
+                        for _line_idx, _line in body_pairs:
+                            candidate = (_line or "").strip()
+                            if _is_closing_promo_start(candidate):
+                                break
+                            if not _is_synthesized_toc_heading(candidate, _line_idx):
+                                continue
+                            key = _re.sub(r"\s+", " ", candidate).strip().upper()
+                            if key in seen_synthesized_toc:
+                                continue
+                            seen_synthesized_toc.add(key)
+                            synthesized_toc_entries.append(candidate)
+                        if len(synthesized_toc_entries) >= 3:
+                            toc_entries = synthesized_toc_entries
 
                     buf = _io.BytesIO()
                     doc = SimpleDocTemplate(
@@ -5147,7 +5401,7 @@ def download_translation(
                     cover_style = ParagraphStyle("DocxCover", fontName=docx_bold_name, fontSize=16, leading=20, alignment=TA_CENTER, spaceAfter=8, splitLongWords=0)
                     heading_style = ParagraphStyle("DocxHeading", fontName=docx_bold_name, fontSize=14, leading=18, alignment=TA_CENTER, spaceBefore=6, spaceAfter=8, splitLongWords=0)
                     subhead_style = ParagraphStyle("DocxSub", fontName=docx_bold_name, fontSize=11, leading=14, alignment=TA_LEFT, spaceBefore=7, spaceAfter=2, splitLongWords=0)
-                    body_style = ParagraphStyle("DocxBody", fontName=docx_regular_name, fontSize=10, leading=13.5, alignment=TA_LEFT, spaceBefore=1.2, spaceAfter=1.2, splitLongWords=0)
+                    body_style = ParagraphStyle("DocxBody", fontName=docx_regular_name, fontSize=10, leading=13.5, alignment=TA_LEFT, spaceBefore=1.2, spaceAfter=6, splitLongWords=0)
                     table_cell_style = ParagraphStyle("DocxTableCell", fontName=docx_regular_name, fontSize=8.5, leading=10.5, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
                     table_header_style = ParagraphStyle("DocxTableHeader", fontName=docx_bold_name, fontSize=8.5, leading=10.5, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
                     toc_style = ParagraphStyle("DocxToc", fontName=docx_regular_name, fontSize=12, leading=18, alignment=TA_LEFT, spaceBefore=0, spaceAfter=7, splitLongWords=0)
@@ -5230,11 +5484,21 @@ def download_translation(
                         if max_cols < 2:
                             return False
                         table_data = []
+                        _table_cursor = line_idx
+                        _available_table_lines = sum(max(len(_cell), 1) for _row in rows for _cell in _row)
+                        _translated_table_lines = translated_table_line_counts.get(line_idx, _available_table_lines)
+                        _table_end = min(len(raw_lines), line_idx + min(_available_table_lines, _translated_table_lines))
                         for row_idx, row in enumerate(rows):
                             padded = list(row) + [[] for _ in range(max_cols - len(row))]
                             rendered_row = []
                             for cell_indices in padded:
-                                cell_text = "<br/>".join(_safe(raw_lines[i]) for i in cell_indices if i < len(raw_lines))
+                                _cell_line_count = max(len(cell_indices), 1)
+                                _cell_lines = []
+                                for _ in range(_cell_line_count):
+                                    if _table_cursor < _table_end:
+                                        _cell_lines.append(raw_lines[_table_cursor])
+                                    _table_cursor += 1
+                                cell_text = "<br/>".join(_safe(_with_number_prefix(_table_cursor - len(_cell_lines) + _offset, _line)) for _offset, _line in enumerate(_cell_lines) if _line)
                                 rendered_row.append(Paragraph(cell_text or " ", table_header_style if row_idx == 0 else table_cell_style))
                             table_data.append(rendered_row)
                         available_width = A4[0] - doc.leftMargin - doc.rightMargin
@@ -5298,37 +5562,70 @@ def download_translation(
                     story.append(PageBreak())
 
                     for local_idx, ln in enumerate(manual_lines, start=2):
+                        render_ln = _render_line_text(local_idx, ln)
                         style = heading_style if local_idx == 2 or (ln.isupper() and len(ln) < 90) or local_idx in bold_line_indices else body_style
-                        story.append(Paragraph(_safe(ln), style))
+                        story.append(Paragraph(_safe(render_ln), style))
                         _append_images_for_line(local_idx)
                     story.append(PageBreak())
 
-                    for local_idx, ln in enumerate(exam_lines, start=exam_idx):
+                    if publication_lines and all(_re.search(r'\b(UPDATED|YAKAGADZIRIDZWA|OPGEDATEER|IMESASISHWA)\b', ln or '', _re.IGNORECASE) for ln in publication_lines):
+                        exam_lines = exam_lines + publication_lines
+                        publication_lines = []
+                    exam_render_lines = list(exam_lines)
+                    for local_idx, ln in enumerate(exam_render_lines, start=exam_idx):
+                        render_ln = _render_line_text(local_idx, ln)
                         if local_idx == exam_idx:
-                            story.append(Paragraph(_safe(ln), heading_style))
+                            story.append(Paragraph(_safe(render_ln), heading_style))
                         elif ln.isupper() and len(ln) < 180:
-                            story.append(Paragraph(_safe(ln), warn_style))
+                            story.append(Paragraph(_safe(render_ln), warn_style))
                         else:
-                            story.append(Paragraph(_safe(ln), body_style))
+                            story.append(Paragraph(_safe(render_ln), body_style))
                         _append_images_for_line(local_idx)
                     story.append(PageBreak())
 
                     if publication_lines:
-                        _publication_start_idx = exam_idx + len(exam_lines)
+                        _publication_start_idx = exam_idx + len(exam_render_lines)
                         for local_idx, ln in enumerate(publication_lines, start=_publication_start_idx):
+                            render_ln = _render_line_text(local_idx, ln)
                             if local_idx == _publication_start_idx or local_idx in bold_line_indices:
-                                story.append(Paragraph(_safe(ln), heading_style if len(ln) <= 90 else body_style))
+                                story.append(Paragraph(_safe(render_ln), heading_style if len(ln) <= 90 else body_style))
                             else:
-                                story.append(Paragraph(_safe(ln), body_style))
+                                story.append(Paragraph(_safe(render_ln), body_style))
                             _append_images_for_line(local_idx)
                         story.append(PageBreak())
 
+                    def _cleanup_docx_toc_entries(_entries):
+                        _cleaned = []
+                        _seen = set()
+                        _seen_major = False
+                        for _entry in _entries or []:
+                            _value = (_entry or '').strip()
+                            if not _value:
+                                continue
+                            _is_intro = bool(_re.match(r'^(UTANGULIZI|NHANGANYAYA\s+YEKOSI|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION|COURSE\s+INTRODUCTION|KURSUS\s+INLEIDING)\b', _value, _re.IGNORECASE))
+                            _is_major = bool(_is_chapter(_value) or _is_section_heading_line(_value) or _re.match(r'^(BIBLIOGRAPHY|BHAIBHERI|MAREJELEO|CONCLUSION|MHEDZISO|HITIMISHO|APPENDIX|AANHANGSEL|CHIMWE\s+CHINHU\s+CHEKUWEDZERA)\b', _value, _re.IGNORECASE))
+                            if _seen_major and _is_intro:
+                                continue
+                            if not (_is_intro or _is_major):
+                                continue
+                            _key = _re.sub(r'\s+', ' ', _value).strip().upper()
+                            if _key in _seen:
+                                continue
+                            _seen.add(_key)
+                            _cleaned.append(_value)
+                            if _is_major:
+                                _seen_major = True
+                        return _cleaned
+
+                    toc_entries = _cleanup_docx_toc_entries(toc_entries) or toc_entries
                     story.append(Paragraph(_safe(raw_lines[toc_idx] if toc_idx < len(raw_lines) else "YALIYOMO"), title_style))
                     _append_images_for_line(toc_idx)
                     story.append(Spacer(1, 0.22 * inch))
                     for entry in toc_entries:
                         story.append(Paragraph(_safe(entry), toc_style))
                     story.append(PageBreak())
+
+                    forced_body_prefix_indices = set()
 
                     def _append_images_for_line(line_idx):
                         for _img_item in image_by_line.get(line_idx, []):
@@ -5350,6 +5647,125 @@ def download_translation(
                             except Exception:
                                 continue
 
+                    source_table_by_line = dict(table_by_line)
+
+                    # Remap DOCX table anchors to translated body indexes. Front-matter slicing
+                    # changes line offsets, so original DOCX line numbers cannot be used directly.
+                    if table_by_line:
+                        _table_items = sorted(table_by_line.items())
+                        _table_signatures = []
+                        for _table_start, _rows in _table_items:
+                            _first_cell_text = ""
+                            for _row in _rows:
+                                for _cell in _row:
+                                    if _cell:
+                                        _first_cell_text = raw_lines[_cell[0]] if _cell[0] < len(raw_lines) else ""
+                                        break
+                                if _first_cell_text:
+                                    break
+                            _table_signatures.append((_table_start, _rows, _first_cell_text))
+                        _remapped_tables = {}
+                        _remapped_table_line_counts = {}
+                        _remapped_skip_indices = set()
+                        def _looks_like_translated_table_header(_idx):
+                            _current = _re.sub(r'\s+', ' ', (raw_lines[_idx] if _idx < len(raw_lines) else '').strip()).lower()
+                            _window = [
+                                _re.sub(r'\s+', ' ', (raw_lines[_i] if _i < len(raw_lines) else '').strip()).lower()
+                                for _i in range(_idx, min(_idx + 6, len(raw_lines)))
+                            ]
+                            _joined = ' | '.join(_window)
+                            level_tokens = (
+                                'vlak van operasie', 'level of operation', 'toɓɓere golle',
+                                'ipele iṣẹ', 'ipele iṣẹ́', 'ipele isẹ', 'operasie'
+                            )
+                            counselor_tokens = (
+                                'tipe berader', 'type of counselor', 'sifaa wasiyaajo',
+                                'iru olùdámọ̀ràn', 'iru olumoran', 'iru olùmọ̀ràn'
+                            )
+                            function_tokens = ('funksie', 'function', 'kugal', 'iṣẹ', 'iṣẹ́', 'ise')
+                            return bool(
+                                any(token in _current for token in level_tokens)
+                                and any(token in _joined for token in counselor_tokens)
+                                and any(token in _joined for token in function_tokens)
+                            )
+
+                        def _translated_table_line_count(_start_idx, _rows):
+                            _shape_count = sum(max(len(_cell), 1) for _row in _rows for _cell in _row)
+                            _cursor = _start_idx
+                            _limit = min(len(raw_lines), _start_idx + max(_shape_count + 8, 24))
+                            _seen_nations = False
+                            while _cursor < _limit:
+                                _value = _re.sub(r'\s+', ' ', (raw_lines[_cursor] or '').strip()).lower()
+                                if _cursor > _start_idx and (
+                                    _value.startswith('ndee tawnoo') or _value.startswith('nde tawnoo')
+                                    or _value.startswith('aangesien hierdie kursus')
+                                    or _value.startswith('since this course')
+                                    or _value.startswith('bí ẹ̀kọ́ yìí') or _value.startswith('bi ẹ̀kọ́ yìí')
+                                    or _value.startswith('bi ẹkọ yii') or _value.startswith('bí ẹkọ yii')
+                                    or _value.startswith('níwọ̀n bí')
+                                    or _value.startswith('niwon')
+                                ):
+                                    break
+                                if _re.match(r'^(5\.|5\s)', _value) or 'leƴƴi' in _value or 'nasies' in _value or 'nations' in _value:
+                                    _seen_nations = True
+                                _cursor += 1
+                                if _seen_nations and _cursor < len(raw_lines):
+                                    _next = _re.sub(r'\s+', ' ', (raw_lines[_cursor] or '').strip()).lower()
+                                    if (
+                                        _next.startswith('ndee tawnoo') or _next.startswith('nde tawnoo')
+                                        or _next.startswith('aangesien hierdie kursus')
+                                        or _next.startswith('since this course')
+                                        or _next.startswith('bí ẹ̀kọ́ yìí') or _next.startswith('bi ẹ̀kọ́ yìí')
+                                        or _next.startswith('bi ẹkọ yii') or _next.startswith('bí ẹkọ yii')
+                                        or _next.startswith('níwọ̀n bí')
+                                        or _next.startswith('niwon')
+                                    ):
+                                        break
+                            return max(_cursor - _start_idx, 1)
+
+                        for _old_start, _rows, _first_cell_text in _table_signatures:
+                            _match_idx = None
+                            # Tables must start at their header row. Fuzzy matching on the first
+                            # source cell can catch preceding paragraphs and pull body text into
+                            # the table, so require the translated header triplet.
+                            for _idx, _line in body_pairs:
+                                if _looks_like_translated_table_header(_idx):
+                                    _match_idx = _idx
+                                    break
+                            if _match_idx is None:
+                                for _idx in range(0, len(raw_lines)):
+                                    if _looks_like_translated_table_header(_idx):
+                                        _match_idx = _idx
+                                        break
+                            if _match_idx is None:
+                                _match_idx = _old_start
+                            _remapped_tables[_match_idx] = _rows
+                            _table_line_count = _translated_table_line_count(_match_idx, _rows)
+                            _remapped_table_line_counts[_match_idx] = _table_line_count
+                            for _skip_idx in range(_match_idx, min(len(raw_lines), _match_idx + _table_line_count)):
+                                _remapped_skip_indices.add(_skip_idx)
+                        table_by_line = _remapped_tables
+                        translated_table_line_counts = _remapped_table_line_counts
+                        skip_table_line_indices = _remapped_skip_indices
+
+                    if source_table_by_line and source_to_trans_idx:
+                        _source_mapped_tables = {}
+                        _source_mapped_counts = {}
+                        _source_mapped_skip = set()
+                        for _src_start, _rows in sorted(source_table_by_line.items()):
+                            _mapped_start = source_to_trans_idx.get(_src_start)
+                            if _mapped_start is None:
+                                continue
+                            _shape_count = sum(max(len(_cell), 1) for _row in _rows for _cell in _row)
+                            _source_mapped_tables[_mapped_start] = _rows
+                            _source_mapped_counts[_mapped_start] = _shape_count
+                            for _skip_idx in range(_mapped_start, min(len(raw_lines), _mapped_start + _shape_count)):
+                                _source_mapped_skip.add(_skip_idx)
+                        if _source_mapped_tables:
+                            table_by_line = _source_mapped_tables
+                            translated_table_line_counts = _source_mapped_counts
+                            skip_table_line_indices = _source_mapped_skip
+
                     previous_was_heading = False
                     previous_was_section_heading = False
                     body_started = False
@@ -5361,34 +5777,106 @@ def download_translation(
                         # from trying to infer sequence state from inherited DOCX list metadata.
                         return value
 
-                    for line_idx, ln in body_pairs:
+                    _skip_body_line_indices = set()
+
+                    def _first_following_body_paragraph(_body_pos):
+                        for _next_idx, _next_ln in body_pairs[_body_pos + 1:]:
+                            if _next_idx in _skip_body_line_indices or _is_toc(_next_ln):
+                                continue
+                            if _next_idx in table_by_line or _next_idx in skip_table_line_indices:
+                                return None
+                            if _is_render_heading(_next_ln, _next_idx) or ((_next_ln or '').isupper() and len(_next_ln or '') <= 100):
+                                return None
+                            if _next_idx in bold_line_indices and len(_next_ln or '') <= 180:
+                                return None
+                            _next_render = _renumber_translated_list_item(_with_number_prefix(_next_idx, _next_ln))
+                            return _next_idx, Paragraph(_safe(_next_render), body_style)
+                        return None
+
+                    for _body_pos, (line_idx, ln) in enumerate(body_pairs):
+                        if line_idx in _skip_body_line_indices:
+                            continue
                         if _is_toc(ln):
                             continue
-                        if line_idx in table_by_line:
+                        if line_idx in table_by_line and not _is_synthesized_toc_heading(ln, line_idx):
                             _append_table_for_line(line_idx)
                             previous_was_heading = False
                             previous_was_section_heading = False
                             body_started = True
                             continue
-                        if line_idx in skip_table_line_indices:
+                        if line_idx in skip_table_line_indices and not _is_synthesized_toc_heading(ln, line_idx):
                             continue
                         render_ln = _renumber_translated_list_item(_with_number_prefix(line_idx, ln))
-                        if _is_render_heading(ln, line_idx) and _is_chapter(ln):
-                            _current_is_section_heading = bool(_re.match(r'^(SEHEMU(?:\s+YA)?|SECTION|ISIGABA|SEKSIE)\s+\d+\s*[:\-–]', ln or '', _re.IGNORECASE))
-                            if body_started and not previous_was_section_heading:
+                        if _is_section_heading_line(ln):
+                            _next_chapter = None
+                            for _next_pos in range(_body_pos + 1, len(body_pairs)):
+                                _next_idx, _next_ln = body_pairs[_next_pos]
+                                if _next_idx in _skip_body_line_indices or _is_toc(_next_ln):
+                                    continue
+                                if _next_idx in table_by_line or _next_idx in skip_table_line_indices:
+                                    break
+                                if _is_chapter(_next_ln) and not _is_section_heading_line(_next_ln) and not _is_body_chapter_reference(_next_ln, _next_idx):
+                                    _next_chapter = (_next_pos, _next_idx, _next_ln)
+                                break
+                            if _next_chapter is not None:
+                                _next_pos, _chapter_idx, _chapter_ln = _next_chapter
+                                _chapter_render = _renumber_translated_list_item(_with_number_prefix(_chapter_idx, _chapter_ln))
+                                _section_group = [
+                                    Paragraph(_safe(render_ln), heading_style),
+                                    Spacer(1, 0.04 * inch),
+                                    Paragraph(_safe(_chapter_render), heading_style),
+                                    Spacer(1, 0.04 * inch),
+                                ]
+                                _skip_body_line_indices.add(_chapter_idx)
+                                _following = _first_following_body_paragraph(_next_pos)
+                                if _following is not None:
+                                    _following_idx, _following_para = _following
+                                    _skip_body_line_indices.add(_following_idx)
+                                    _section_group.append(_following_para)
+                                if body_started:
+                                    story.append(PageBreak())
+                                story.append(KeepTogether(_section_group))
+                                _append_images_for_line(line_idx)
+                                _append_images_for_line(_chapter_idx)
+                                if _following is not None:
+                                    _append_images_for_line(_following_idx)
+                                previous_was_heading = True
+                                previous_was_section_heading = True
+                                _last_chapter_line_idx = _chapter_idx
+                                body_started = True
+                                continue
+                        if _is_render_heading(ln, line_idx) and (_is_chapter(ln) or _source_heading_level_for_line(line_idx) in (1, 2)):
+                            _current_is_section_heading = bool(_source_heading_level_for_line(line_idx) == 1 or _is_section_heading_line(ln))
+                            if body_started and _is_major_start_heading(ln, line_idx):
                                 story.append(PageBreak())
-                            story.append(KeepTogether([Paragraph(_safe(render_ln), heading_style), Spacer(1, 0.04 * inch)]))
+                            _heading_flowables = [Paragraph(_safe(render_ln), heading_style), Spacer(1, 0.04 * inch)]
+                            _following = _first_following_body_paragraph(_body_pos)
+                            if _following is not None:
+                                _following_idx, _following_para = _following
+                                _skip_body_line_indices.add(_following_idx)
+                                _heading_flowables.append(_following_para)
+                            story.append(KeepTogether(_heading_flowables))
                             _append_images_for_line(line_idx)
+                            if _following is not None:
+                                _append_images_for_line(_following_idx)
                             previous_was_heading = True
                             previous_was_section_heading = _current_is_section_heading
                             _last_chapter_line_idx = line_idx
                             body_started = True
-                        elif _is_render_heading(ln, line_idx) and _re.match(r'^(UTANGULIZI|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION)\b', ln, _re.IGNORECASE):
+                        elif _is_render_heading(ln, line_idx) and _re.match(r'^(UTANGULIZI|NHANGANYAYA|ISINGENISO|DIBAJI|PREFACE|INTRODUCTION)\b', ln, _re.IGNORECASE):
                             _intro_follows_chapter_opening = _last_chapter_line_idx is not None and (line_idx - _last_chapter_line_idx) <= 4
-                            if body_started and not previous_was_heading and not _intro_follows_chapter_opening:
+                            if body_started and _is_major_start_heading(ln, line_idx) and not _intro_follows_chapter_opening:
                                 story.append(PageBreak())
-                            story.append(KeepTogether([Paragraph(_safe(render_ln), heading_style), Spacer(1, 0.04 * inch)]))
+                            _heading_flowables = [Paragraph(_safe(render_ln), heading_style), Spacer(1, 0.04 * inch)]
+                            _following = _first_following_body_paragraph(_body_pos)
+                            if _following is not None:
+                                _following_idx, _following_para = _following
+                                _skip_body_line_indices.add(_following_idx)
+                                _heading_flowables.append(_following_para)
+                            story.append(KeepTogether(_heading_flowables))
                             _append_images_for_line(line_idx)
+                            if _following is not None:
+                                _append_images_for_line(_following_idx)
                             previous_was_heading = True
                             previous_was_section_heading = False
                             _last_chapter_line_idx = None
@@ -5423,10 +5911,9 @@ def download_translation(
                             _append_images_for_line(_line_idx)
 
                     def _number_pages(canvas, doc_obj):
-                        canvas.saveState()
-                        canvas.setFont(docx_regular_name, 8)
-                        canvas.drawCentredString(A4[0] / 2.0, 0.35 * inch, str(canvas.getPageNumber()))
-                        canvas.restoreState()
+                        # Do not synthesize page-number footers. In long generated TOCs
+                        # they are extracted as content and merge into TOC entries.
+                        return
 
                     doc.build(story, onFirstPage=_number_pages, onLaterPages=_number_pages)
                     content = buf.getvalue()

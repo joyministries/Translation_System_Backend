@@ -26,6 +26,7 @@ class TranslationService:
                 Translation.content_type == content_type,
                 Translation.content_id == content_id,
                 Translation.language_id == language_id,
+                Translation.source_language_id == source_language_id,
                 Translation.status == "done",
             )
             .first()
@@ -40,6 +41,7 @@ class TranslationService:
                 Translation.content_type == content_type,
                 Translation.content_id == content_id,
                 Translation.language_id == language_id,
+                Translation.source_language_id == source_language_id,
             )
             .first()
         )
