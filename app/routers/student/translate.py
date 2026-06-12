@@ -1490,11 +1490,11 @@ def download_translation(
                                         overlay=True,
                                     )
                     # --- Build body from stored translation using original PDF line styles ---
-                    heading_style = ParagraphStyle("H", fontName=reportlab_bold_name, fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=1, keepWithNext=1, splitLongWords=0)
-                    chapter_heading_style = ParagraphStyle("HC", fontName=reportlab_bold_name, fontSize=14, spaceBefore=14, spaceAfter=4, leading=18, alignment=1, keepWithNext=1, splitLongWords=0)
-                    intro_title_style = ParagraphStyle("IT", fontName=reportlab_bold_name, fontSize=16, spaceBefore=6, spaceAfter=8, leading=20, alignment=1, keepWithNext=1, splitLongWords=0)
-                    subhead_style = ParagraphStyle("SH", fontName=reportlab_bold_name, fontSize=11, spaceBefore=8, spaceAfter=2, leading=14, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
-                    warning_line_style = ParagraphStyle("WARN", fontName=reportlab_bold_name, fontSize=8, spaceBefore=8, spaceAfter=2, leading=10, alignment=1, keepWithNext=1, splitLongWords=0)
+                    heading_style = ParagraphStyle("H", fontName=reportlab_bold_name, fontSize=15, spaceBefore=14, spaceAfter=6, leading=19, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
+                    chapter_heading_style = ParagraphStyle("HC", fontName=reportlab_bold_name, fontSize=15, spaceBefore=14, spaceAfter=6, leading=19, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
+                    intro_title_style = ParagraphStyle("IT", fontName=reportlab_bold_name, fontSize=15, spaceBefore=8, spaceAfter=6, leading=19, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
+                    subhead_style = ParagraphStyle("SH", fontName=reportlab_bold_name, fontSize=9.5, spaceBefore=6, spaceAfter=2, leading=12, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
+                    warning_line_style = ParagraphStyle("WARN", fontName=reportlab_bold_name, fontSize=8, spaceBefore=8, spaceAfter=2, leading=10, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
                     toc_line_style = ParagraphStyle("TOC", fontName=reportlab_regular_name, fontSize=12, spaceBefore=0, spaceAfter=8, leading=18, alignment=TA_LEFT, splitLongWords=0)
                     body_style = ParagraphStyle("B", fontName=reportlab_regular_name, fontSize=10, spaceBefore=1.2, spaceAfter=1.2, leading=13.5, alignment=TA_LEFT, splitLongWords=0)
                     body_style_bold = ParagraphStyle("BB", fontName=reportlab_bold_name, fontSize=10, spaceBefore=1.2, spaceAfter=1.2, leading=13.5, alignment=TA_LEFT, splitLongWords=0)
@@ -5286,9 +5286,21 @@ def download_translation(
                         _re.match(r'^(SEHEMU(?:\s+YA)?|SECTION|ISIGABA|SEKSIE|AFDELING|AP[ÁA]|TAŊRE)\s+\d+\s*[:\-–]', ln or '', _re.IGNORECASE)
                         for ln in (body_lines + pre_body_toc_entries)
                     )
+                    def _is_bible_book_subhead(value):
+                        clean = (value or '').strip()
+                        if not clean:
+                            return False
+                        return bool(_re.match(
+                            r'^(?:[1I]|2|3|II|III|I{1,3})\s+(?:SAMUEL|KINGS|KONINGS|KRONIEKE|CHRONICLES|CORINTHIANS|KORINTIERS|KORINTE|THESSALONIANS|THESSALONISENSE|TIMOTHY|TIMOTEUS|PETER|PETRUS|JOHN|JOHANNES|UJOHANE|YOHANE|JUAN|VA(?:KORINDE|TESARONIKA|TIMOTI)|PETRO)\b',
+                            clean,
+                            _re.IGNORECASE,
+                        ))
+
                     def _source_level_looks_like_heading(value, source_level):
                         clean = (value or '').strip()
                         if source_level not in (1, 2) or not clean:
+                            return False
+                        if _is_bible_book_subhead(clean):
                             return False
                         if _is_chapter(clean) or _is_section_heading_line(clean):
                             return True
@@ -5301,10 +5313,12 @@ def download_translation(
                         if not clean or _is_body_chapter_reference(clean, line_idx):
                             return False
                         # Sections are headings but not standalone page starts in the source books.
+                        # Plain INTRODUCTION/ISINGENISO/NHANGANYAYA inside chapters are subheads,
+                        # so they must not force a new page. Course-level introduction labels still do.
                         return bool(
                             (_is_chapter(clean) and not _is_section_heading_line(clean) and not _is_body_chapter_reference(clean, line_idx))
                             or _re.match(
-                                r'^(?:PREFACE|INTRODUCTION|NHANGANYAYA|UTANGULIZI|ISINGENISO|DIBAJI|KURSUS\s+INLEIDING|BIBLIOGRAPHY|BHAIBHERI|MAREJELEO|CONCLUSION|MHEDZISO|HITIMISHO)\s*$',
+                                r'^(?:COURSE\s+INTRODUCTION|KURSUS\s+INLEIDING|NHANGANYAYA\s+YEKOSI|ISINGENISO\s+SENKQUBO|ISINGENISO\s+SESIFUNDO|PREFACE|DIBAJI|UTANGULIZI|BIBLIOGRAPHY|BHAIBHERI|MAREJELEO|CONCLUSION|MHEDZISO|HITIMISHO)\s*$',
                                 clean,
                                 _re.IGNORECASE,
                             )
@@ -5397,15 +5411,15 @@ def download_translation(
                         bottomMargin=0.68 * inch,
                     )
 
-                    title_style = ParagraphStyle("DocxTitle", fontName=docx_bold_name, fontSize=18, leading=22, alignment=TA_CENTER, spaceAfter=10, splitLongWords=0)
+                    title_style = ParagraphStyle("DocxTitle", fontName=docx_bold_name, fontSize=18, leading=22, alignment=TA_LEFT, spaceAfter=10, splitLongWords=0)
                     cover_style = ParagraphStyle("DocxCover", fontName=docx_bold_name, fontSize=16, leading=20, alignment=TA_CENTER, spaceAfter=8, splitLongWords=0)
-                    heading_style = ParagraphStyle("DocxHeading", fontName=docx_bold_name, fontSize=14, leading=18, alignment=TA_CENTER, spaceBefore=6, spaceAfter=8, splitLongWords=0)
-                    subhead_style = ParagraphStyle("DocxSub", fontName=docx_bold_name, fontSize=11, leading=14, alignment=TA_LEFT, spaceBefore=7, spaceAfter=2, splitLongWords=0)
+                    heading_style = ParagraphStyle("DocxHeading", fontName=docx_bold_name, fontSize=15, leading=19, alignment=TA_LEFT, spaceBefore=8, spaceAfter=6, splitLongWords=0)
+                    subhead_style = ParagraphStyle("DocxSub", fontName=docx_bold_name, fontSize=9.5, leading=12, alignment=TA_LEFT, spaceBefore=6, spaceAfter=2, splitLongWords=0)
                     body_style = ParagraphStyle("DocxBody", fontName=docx_regular_name, fontSize=10, leading=13.5, alignment=TA_LEFT, spaceBefore=1.2, spaceAfter=6, splitLongWords=0)
                     table_cell_style = ParagraphStyle("DocxTableCell", fontName=docx_regular_name, fontSize=8.5, leading=10.5, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
                     table_header_style = ParagraphStyle("DocxTableHeader", fontName=docx_bold_name, fontSize=8.5, leading=10.5, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
                     toc_style = ParagraphStyle("DocxToc", fontName=docx_regular_name, fontSize=12, leading=18, alignment=TA_LEFT, spaceBefore=0, spaceAfter=7, splitLongWords=0)
-                    warn_style = ParagraphStyle("DocxWarn", fontName=docx_bold_name, fontSize=9, leading=12, alignment=TA_CENTER, spaceBefore=8, spaceAfter=4, splitLongWords=0)
+                    warn_style = ParagraphStyle("DocxWarn", fontName=docx_bold_name, fontSize=9, leading=12, alignment=TA_LEFT, spaceBefore=8, spaceAfter=4, splitLongWords=0)
 
                     story = []
 
@@ -5849,7 +5863,8 @@ def download_translation(
                             _current_is_section_heading = bool(_source_heading_level_for_line(line_idx) == 1 or _is_section_heading_line(ln))
                             if body_started and _is_major_start_heading(ln, line_idx):
                                 story.append(PageBreak())
-                            _heading_flowables = [Paragraph(_safe(render_ln), heading_style), Spacer(1, 0.04 * inch)]
+                            _heading_style_for_line = subhead_style if (_is_bible_book_subhead(ln) or (_source_heading_level_for_line(line_idx) == 2 and not _is_chapter(ln) and not _is_section_heading_line(ln))) else heading_style
+                            _heading_flowables = [Paragraph(_safe(render_ln), _heading_style_for_line), Spacer(1, 0.04 * inch)]
                             _following = _first_following_body_paragraph(_body_pos)
                             if _following is not None:
                                 _following_idx, _following_para = _following
