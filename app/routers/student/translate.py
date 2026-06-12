@@ -2444,6 +2444,15 @@ def download_translation(
                             workbook_front_story.append(PageBreak())
                         if exam_lines:
                             exam_lines = _merge_front_matter_paragraph_lines(exam_lines, preserve_first_heading=True)
+                            def _is_front_matter_updated_line(_line: str) -> bool:
+                                _text = (_line or '').strip()
+                                if not _text:
+                                    return False
+                                return bool(_re.match(
+                                    r'^(?:updated|opgedateer|kubuyekezwe|yakagadziridzwa|hersien|revised|mis[eè]\s+[àa]\s+jour|actualizado|atualizado)\b',
+                                    _text,
+                                    _re.IGNORECASE,
+                                ))
                             _merged_exam_lines = []
                             _i = 0
                             while _i < len(exam_lines):
@@ -2473,7 +2482,11 @@ def download_translation(
                                 _merged_exam_lines.append(_line)
                                 _i += 1
                             exam_lines = _merged_exam_lines
+                            _inserted_updated_page_break = False
                             for idx, line in enumerate(exam_lines):
+                                if idx > 0 and not _inserted_updated_page_break and _is_front_matter_updated_line(line):
+                                    workbook_front_story.append(PageBreak())
+                                    _inserted_updated_page_break = True
                                 _warning_end = _re.search(r'\b(INCLUDED|INGESLUIT|IMEJUMUISHWA|ZVASANGANISWA)\b\.?', line or '', _re.IGNORECASE)
                                 if _warning_end and any(_marker in (line or '').upper() for _marker in ('PLEASE ENSURE', 'TAFADHALI HAKIKISHA', 'MAAK ASSEBLIEF', 'NDAPOTA')):
                                     line = line[:_warning_end.end()].strip()
@@ -5127,7 +5140,10 @@ def download_translation(
                                 legal_override_by_line[_line_idx] = _source_legal.strip()
 
                     def _render_line_text(line_idx, line):
-                        value = legal_override_by_line.get(line_idx, (line or '').strip())
+                        if line_idx in _publication_line_indexes:
+                            value = (line or '').strip()
+                        else:
+                            value = legal_override_by_line.get(line_idx, (line or '').strip())
                         value = _re.sub(r'\bSpan Impak Christelike Universiteit\b', 'Team Impact Christian University', value, flags=_re.IGNORECASE)
                         value = _re.sub(r'\bTeam Impact Christelike Universiteit\b', 'Team Impact Christian University', value, flags=_re.IGNORECASE)
                         return value
@@ -5181,10 +5197,11 @@ def download_translation(
                     manual_lines = raw_lines[2:exam_idx]
                     exam_lines = raw_lines[exam_idx:toc_idx]
                     publication_lines = []
+                    _publication_line_indexes = set()
                     if exam_lines:
                         _updated_rel_idx = None
                         for _rel_i, _front_line in enumerate(exam_lines):
-                            if _re.search(r'\b(UPDATED|IMESASISHWA|OPGEDATEER|YAKAGADZIRIDZWA|ÀTÚNṢE|ATUNSE|HESƊITINAAMA|HESƊITINAA|HESƊITINDE)\b', _front_line or '', _re.IGNORECASE):
+                            if _re.search(r'\b(UPDATED|IMESASISHWA|OPGEDATEER|KUBUYEKEZWE|YAKAGADZIRIDZWA|ÀTÚNṢE|ATUNSE|HESƊITINAAMA|HESƊITINAA|HESƊITINDE)\b', _front_line or '', _re.IGNORECASE):
                                 _updated_rel_idx = _rel_i
                         if _updated_rel_idx is not None:
                             _publication_rel_start = _updated_rel_idx
@@ -5194,6 +5211,7 @@ def download_translation(
                                     _publication_rel_start = _candidate_idx
                                     break
                             publication_lines = exam_lines[_publication_rel_start:]
+                            _publication_line_indexes = set(range(_publication_rel_start, len(exam_lines)))
                             exam_lines = exam_lines[:_publication_rel_start]
 
                     body_start = toc_idx + 1 if toc_idx < len(raw_lines) else toc_idx
@@ -5582,7 +5600,8 @@ def download_translation(
                         _append_images_for_line(local_idx)
                     story.append(PageBreak())
 
-                    if publication_lines and all(_re.search(r'\b(UPDATED|YAKAGADZIRIDZWA|OPGEDATEER|IMESASISHWA)\b', ln or '', _re.IGNORECASE) for ln in publication_lines):
+                    if publication_lines and all(_re.search(r'\b(UPDATED|YAKAGADZIRIDZWA|OPGEDATEER|KUBUYEKEZWE|IMESASISHWA)\b', ln or '', _re.IGNORECASE) for ln in publication_lines):
+                        _publication_line_indexes = set(range(len(exam_lines), len(exam_lines) + len(publication_lines)))
                         exam_lines = exam_lines + publication_lines
                         publication_lines = []
                     exam_render_lines = list(exam_lines)
@@ -5599,13 +5618,17 @@ def download_translation(
 
                     if publication_lines:
                         _publication_start_idx = exam_idx + len(exam_render_lines)
-                        for local_idx, ln in enumerate(publication_lines, start=_publication_start_idx):
-                            render_ln = _render_line_text(local_idx, ln)
-                            if local_idx == _publication_start_idx or local_idx in bold_line_indices:
-                                story.append(Paragraph(_safe(render_ln), heading_style if len(ln) <= 90 else body_style))
+                        for offset, ln in enumerate(publication_lines):
+                            abs_idx = _publication_start_idx + offset
+                            render_ln = (ln or '').strip()
+                            _legalish = bool(_re.search(r'(copyright|all rights reserved|no part of this publication|rights reserved|prior written permission|publisher|publisher\.)', render_ln, _re.IGNORECASE))
+                            if _legalish:
+                                render_ln = legal_override_by_line.get(abs_idx, render_ln)
+                            if offset == 0 or abs_idx in bold_line_indices:
+                                story.append(Paragraph(_safe(render_ln), heading_style if len(render_ln) <= 90 else body_style))
                             else:
                                 story.append(Paragraph(_safe(render_ln), body_style))
-                            _append_images_for_line(local_idx)
+                            _append_images_for_line(abs_idx)
                         story.append(PageBreak())
 
                     def _cleanup_docx_toc_entries(_entries):
