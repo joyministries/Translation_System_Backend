@@ -432,11 +432,7 @@ def get_translation(
 def download_translation(
     translation_id: str,
     format: str = "pdf",
-    cache_variant: str | None = Query(
-        None,
-        pattern=r"^[A-Za-z0-9_-]{1,40}$",
-        description="Optional suffix for writing/reading a separate cached PDF variant.",
-    ),
+    cache_variant: str | None = None,
     refresh_cache: bool = False,
     current_user: User = Depends(require_role("admin", "student")),
     db: Session = Depends(get_db),
@@ -447,17 +443,36 @@ def download_translation(
         trans_uuid = uuid.UUID(translation_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid translation_id format")
-
     translation = TranslationService.get_translation(db, trans_uuid)
     if not translation:
         raise HTTPException(status_code=404, detail="Translation not found")
+
+    import re as _re
 
     if translation.status != "done":
         raise HTTPException(status_code=400, detail="Translation not complete yet")
 
     from fastapi.responses import Response
 
+    if not isinstance(cache_variant, str):
+        cache_variant = None
+
     text = translation.translated_text
+    if text:
+        _clean_lines = []
+        _prev_norm = None
+        for _line in text.splitlines():
+            _stripped = (_line or '').strip()
+            if not _stripped:
+                _clean_lines.append('')
+                _prev_norm = None
+                continue
+            _norm = _re.sub(r'\s+', ' ', _stripped).upper()
+            if _norm and _norm == _prev_norm:
+                continue
+            _clean_lines.append(_stripped)
+            _prev_norm = _norm
+        text = '\n'.join(_clean_lines)
 
     # Get book cover text if exists
     if translation.content_type == "book":
@@ -508,7 +523,7 @@ def download_translation(
             try:
                 import os as _os, io as _io
                 cache_suffix = f"_translated_{translation.language_id}"
-                if cache_variant:
+                if isinstance(cache_variant, str) and cache_variant:
                     cache_suffix = f"{cache_suffix}_{cache_variant}"
                 cached_pdf_path = f"/app/storage/{book.file_path.replace('.pdf', f'{cache_suffix}.pdf')}"
 
@@ -739,7 +754,7 @@ def download_translation(
                         normalized = _re.sub(r'(?:\.\.\.|…)\s*\n\s*\n\s*(?:\.\.\.|…)', '... ...', normalized)
                         return normalized
 
-                    rendered_translated_text = _normalize_split_scripture_text(translation.translated_text or "")
+                    rendered_translated_text = _normalize_split_scripture_text(text or "")
                     _stored_translated_lines = [ln.strip() for ln in rendered_translated_text.split("\n") if ln.strip()]
                     _cover_line_count = len([ln for ln in orig_doc[0].get_text("text", sort=True).splitlines() if ln.strip()]) if len(orig_doc) else 0
                     _title_page_line_count = len([ln for ln in orig_doc[1].get_text("text", sort=True).splitlines() if ln.strip()]) if len(orig_doc) > 1 else 0
@@ -1130,7 +1145,17 @@ def download_translation(
                                     or "ATỌKA" in upper
                                 )
 
-                            text_blocks = [tb for tb in text_blocks if _is_toc_block(tb[1])]
+                            filtered_blocks = []
+                            seen_toc_texts = set()
+                            for tb in text_blocks:
+                                if not _is_toc_block(tb[1]):
+                                    continue
+                                normalized_text = _re.sub(r"\s+", " ", (tb[1] or "").strip()).upper()
+                                if not normalized_text or normalized_text in seen_toc_texts:
+                                    continue
+                                seen_toc_texts.add(normalized_text)
+                                filtered_blocks.append(tb)
+                            text_blocks = filtered_blocks
                         if text_blocks:
                             translated = _translate_front_texts([t for _, t, _ in text_blocks])
                             if page_num == 2 and not is_toc_page:
@@ -2577,18 +2602,35 @@ def download_translation(
                                         _seen_chapter = True
                                 return _cleaned_entries
                             render_toc_entries = _final_workbook_toc_cleanup(toc_entries) or toc_entries
+                            def _toc_canon(_value):
+                                return _re.sub(r'[^A-Z0-9]+', '', _re.sub(r"\s+", " ", (_value or '').strip()).upper())
+                            toc_title_value = _re.sub(r"\s+", " ", (toc_title_text or "").strip()).upper()
+                            body_heading_value = _re.sub(r"\s+", " ", (body_heading_after_toc or "").strip()).upper()
+                            intro_heading_value = _re.sub(r"\s+", " ", (intro_heading_after_toc or "").strip()).upper()
+                            toc_aliases = {_toc_canon(toc_title_value), _toc_canon(body_heading_value), _toc_canon(intro_heading_value)}
+                            render_toc_entries = [
+                                _entry for _entry in render_toc_entries
+                                if _toc_canon(_entry) not in toc_aliases
+                                and not _is_body_start_heading(_entry)
+                                and not chapter_1_pattern.match(_entry or '')
+                            ]
                             import logging as _log
-                            _log.getLogger(__name__).warning(f'workbook front matter intro={intro_heading_after_toc!r} toc_count={len(toc_entries)} title={toc_title_text!r}')
+                            _log.getLogger(__name__).warning(f'workbook front matter intro={intro_heading_after_toc!r} toc_count={len(render_toc_entries)} title={toc_title_text!r}')
                             title_safe = _normalize_render_quotes(toc_title_text).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-                            workbook_front_story.append(Paragraph(title_safe, heading_style))
-                            workbook_front_story.append(Spacer(1, 0.12*inch))
                             toc_block_lines = []
                             workbook_front_story.append(Spacer(1, 0.25*inch))
                             for cleaned in render_toc_entries:
                                 safe_line = _normalize_render_quotes(cleaned).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+                                if not safe_line:
+                                    continue
+                                if toc_block_lines and toc_block_lines[-1].strip().upper() == safe_line.strip().upper():
+                                    continue
                                 toc_block_lines.append(safe_line)
+                            if toc_block_lines and toc_block_lines[0].strip().upper() == title_safe.strip().upper():
+                                toc_block_lines = toc_block_lines[1:]
                             toc_block = "<br/>".join(toc_block_lines)
-                            workbook_front_story.append(Paragraph(toc_block, ParagraphStyle("WORKBOOK_TOC_BLOCK", parent=toc_line_style, fontSize=12, leading=18, alignment=TA_LEFT, spaceAfter=0, spaceBefore=0)))
+                            if toc_block:
+                                workbook_front_story.append(Paragraph(toc_block, ParagraphStyle("WORKBOOK_TOC_BLOCK", parent=toc_line_style, fontSize=12, leading=18, alignment=TA_LEFT, spaceAfter=0, spaceBefore=0)))
                             workbook_front_cutoff_index = body_start_index
                     if toc_end_index is not None and not ('_slot_mapping_active' in locals() and _slot_mapping_active):
                         body_start_index = max(body_start_index, toc_end_index)
@@ -2604,7 +2646,7 @@ def download_translation(
                     source_index = 0
                     translated_records = []
                     paragraph_buffer = []
-                    paragraph_experiment_enabled = 'platypus-paragraph-experiment' in (cache_variant or '')
+                    paragraph_experiment_enabled = isinstance(cache_variant, str) and 'platypus-paragraph-experiment' in cache_variant
 
                     def _peek_source_record():
                         if source_index >= len(source_records):
@@ -4827,21 +4869,17 @@ def download_translation(
                     # Use one deterministic workbook renderer by default so first render,
                     # cache refresh, and rebuild-style renders have the same layout contract.
                     # The DOCX/LibreOffice preserve path is now opt-in for diagnostics only.
-                    preserve_docx_layout = bool(
-                        cache_variant
-                        and "preserve-docx" in cache_variant
-                        and "rebuild-docx" not in cache_variant
-                    )
+                    preserve_docx_layout = True
                     try:
                         import shutil as _shutil, subprocess as _subprocess, tempfile as _tempfile
                         from app.services.docx_translation_service import apply_translated_paragraphs_to_docx_bytes
 
                         _soffice = _shutil.which("libreoffice") or _shutil.which("soffice")
-                        if _soffice and preserve_docx_layout and not pdf_normalized_docx:
+                        if _soffice and preserve_docx_layout:
                             with open(f"/app/storage/{source_docx_path}", "rb") as _src_docx_file:
                                 _translated_docx = apply_translated_paragraphs_to_docx_bytes(
                                     _src_docx_file.read(),
-                                    translation.translated_text or "",
+                                    text or "",
                                 )
                             with _tempfile.TemporaryDirectory() as _tmpdir:
                                 _input_docx = os.path.join(_tmpdir, "translated.docx")
@@ -4905,7 +4943,17 @@ def download_translation(
                         import logging as _lo_logging
                         _lo_logging.getLogger(__name__).warning(f"LibreOffice DOCX PDF conversion failed; falling back to ReportLab: {_lo_exc}")
 
-                    raw_lines = [ln.strip() for ln in (translation.translated_text or "").splitlines() if ln.strip()]
+                    raw_lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+                    if raw_lines:
+                        deduped_lines = []
+                        prev_norm = None
+                        for _line in raw_lines:
+                            _norm = _re.sub(r'\s+', ' ', (_line or '').strip()).upper()
+                            if _norm and _norm == prev_norm:
+                                continue
+                            deduped_lines.append(_line)
+                            prev_norm = _norm
+                        raw_lines = deduped_lines
                     if not raw_lines:
                         raise ValueError("No translated text available for DOCX PDF")
 
@@ -5216,6 +5264,7 @@ def download_translation(
 
                     body_start = toc_idx + 1 if toc_idx < len(raw_lines) else toc_idx
                     pre_body_toc_entries = []
+                    toc_body_line_indices = set()
 
                     def _is_section_heading_line(value):
                         return bool(_re.match(r'^(SEHEMU(?:\s+YA)?|SECTION|ISIGABA|SEKSIE|AFDELING|AP[ÁA]|TAŊRE)\s+\d+\s*[:\-–]', value or '', _re.IGNORECASE))
@@ -5246,6 +5295,7 @@ def download_translation(
                         # Use copied headings for the synthesized TOC, but keep those headings in the body.
                         body_start = toc_idx + 1 if toc_idx < len(raw_lines) else toc_idx
                         pre_body_toc_entries = []
+                    toc_body_line_indices = set(range(toc_idx + 1, body_start)) if toc_idx < body_start else set()
                     body_pairs = list(enumerate(raw_lines[body_start:], start=body_start))
 
                     _source_body_start_idx = None
@@ -5387,6 +5437,13 @@ def download_translation(
                                     toc_entries.append(ln)
                     if not toc_entries and toc_idx < len(raw_lines):
                         toc_entries = [ln for ln in raw_lines[toc_idx + 1: min(toc_idx + 20, len(raw_lines))] if ln]
+                    if toc_entries and 'toc_title' in locals():
+                        toc_title_value = _re.sub(r"\s+", " ", (toc_title or "").strip()).upper()
+                        if toc_title_value:
+                            toc_entries = [
+                                ln for ln in toc_entries
+                                if _re.sub(r"\s+", " ", (ln or "").strip()).upper() != toc_title_value
+                            ]
 
                     def _is_synthesized_toc_heading(value, line_idx=None):
                         clean = (value or "").strip()
@@ -5655,12 +5712,35 @@ def download_translation(
                         return _cleaned
 
                     toc_entries = _cleanup_docx_toc_entries(toc_entries) or toc_entries
-                    story.append(Paragraph(_safe(raw_lines[toc_idx] if toc_idx < len(raw_lines) else "YALIYOMO"), title_style))
-                    _append_images_for_line(toc_idx)
-                    story.append(Spacer(1, 0.22 * inch))
-                    for entry in toc_entries:
-                        story.append(Paragraph(_safe(entry), toc_style))
-                    story.append(PageBreak())
+                    def _toc_canon(_value):
+                        return _re.sub(r'[^A-Z0-9]+', '', _re.sub(r"\s+", " ", (_value or '').strip()).upper())
+                    toc_title_value = _re.sub(r"\s+", " ", (toc_title_text or raw_lines[toc_idx] if toc_idx < len(raw_lines) else "YALIYOMO").strip()).upper()
+                    body_heading_value = _re.sub(r"\s+", " ", (body_heading_after_toc or "").strip()).upper()
+                    intro_heading_value = _re.sub(r"\s+", " ", (intro_heading_after_toc or "").strip()).upper()
+                    toc_entry_values = {_toc_canon(toc_title_value), _toc_canon(body_heading_value), _toc_canon(intro_heading_value)}
+                    toc_entries = [
+                        entry for entry in toc_entries
+                        if _toc_canon(entry) not in toc_entry_values
+                        and not _is_body_start_heading(entry)
+                        and not _is_chapter(entry)
+                    ]
+                    _toc_title_line = _re.sub(r"\s+", " ", (toc_title_text or raw_lines[toc_idx] if toc_idx < len(raw_lines) else "YALIYOMO")).strip().upper()
+                    toc_entries = [
+                        entry for entry in toc_entries
+                        if _re.sub(r"\s+", " ", (entry or "")).strip().upper() != _toc_title_line
+                    ]
+                    toc_body_texts = {
+                        _toc_canon(entry)
+                        for entry in toc_entries
+                        if entry
+                    }
+                    if not workbook_like:
+                        story.append(Paragraph(_safe(raw_lines[toc_idx] if toc_idx < len(raw_lines) else "YALIYOMO"), title_style))
+                        _append_images_for_line(toc_idx)
+                        story.append(Spacer(1, 0.22 * inch))
+                        for entry in toc_entries:
+                            story.append(Paragraph(_safe(entry), toc_style))
+                        story.append(PageBreak())
 
                     forced_body_prefix_indices = set()
 
@@ -5831,9 +5911,13 @@ def download_translation(
                         return None
 
                     for _body_pos, (line_idx, ln) in enumerate(body_pairs):
+                        if line_idx in toc_body_line_indices:
+                            continue
                         if line_idx in _skip_body_line_indices:
                             continue
                         if _is_toc(ln):
+                            continue
+                        if toc_body_texts and _re.sub(r'[^A-Z0-9]+', '', _re.sub(r'\s+', ' ', (ln or '').strip()).upper()) in toc_body_texts:
                             continue
                         if line_idx in table_by_line and not _is_synthesized_toc_heading(ln, line_idx):
                             _append_table_for_line(line_idx)
@@ -5845,43 +5929,12 @@ def download_translation(
                             continue
                         render_ln = _renumber_translated_list_item(_with_number_prefix(line_idx, ln))
                         if _is_section_heading_line(ln):
-                            _next_chapter = None
-                            for _next_pos in range(_body_pos + 1, len(body_pairs)):
-                                _next_idx, _next_ln = body_pairs[_next_pos]
-                                if _next_idx in _skip_body_line_indices or _is_toc(_next_ln):
-                                    continue
-                                if _next_idx in table_by_line or _next_idx in skip_table_line_indices:
-                                    break
-                                if _is_chapter(_next_ln) and not _is_section_heading_line(_next_ln) and not _is_body_chapter_reference(_next_ln, _next_idx):
-                                    _next_chapter = (_next_pos, _next_idx, _next_ln)
-                                break
-                            if _next_chapter is not None:
-                                _next_pos, _chapter_idx, _chapter_ln = _next_chapter
-                                _chapter_render = _renumber_translated_list_item(_with_number_prefix(_chapter_idx, _chapter_ln))
-                                _section_group = [
-                                    Paragraph(_safe(render_ln), heading_style),
-                                    Spacer(1, 0.04 * inch),
-                                    Paragraph(_safe(_chapter_render), heading_style),
-                                    Spacer(1, 0.04 * inch),
-                                ]
-                                _skip_body_line_indices.add(_chapter_idx)
-                                _following = _first_following_body_paragraph(_next_pos)
-                                if _following is not None:
-                                    _following_idx, _following_para = _following
-                                    _skip_body_line_indices.add(_following_idx)
-                                    _section_group.append(_following_para)
-                                if body_started:
-                                    story.append(PageBreak())
-                                story.append(KeepTogether(_section_group))
-                                _append_images_for_line(line_idx)
-                                _append_images_for_line(_chapter_idx)
-                                if _following is not None:
-                                    _append_images_for_line(_following_idx)
-                                previous_was_heading = True
-                                previous_was_section_heading = True
-                                _last_chapter_line_idx = _chapter_idx
-                                body_started = True
-                                continue
+                            story.append(KeepTogether([Paragraph(_safe(render_ln), subhead_style), Spacer(1, 0.02 * inch)]))
+                            _append_images_for_line(line_idx)
+                            previous_was_heading = True
+                            previous_was_section_heading = True
+                            body_started = True
+                            continue
                         if _is_render_heading(ln, line_idx) and (_is_chapter(ln) or _source_heading_level_for_line(line_idx) in (1, 2)):
                             _current_is_section_heading = bool(_source_heading_level_for_line(line_idx) == 1 or _is_section_heading_line(ln))
                             if body_started and _is_major_start_heading(ln, line_idx):
@@ -6078,7 +6131,7 @@ def download_translation(
             else:
                 with open(f"/app/storage/{source_docx_path}", "rb") as f:
                     original_docx = f.read()
-                content = apply_translated_paragraphs_to_docx_bytes(original_docx, translation.translated_text or text)
+                content = apply_translated_paragraphs_to_docx_bytes(original_docx, text or translation.translated_text or "")
                 with open(cached_docx_path, "wb") as f:
                     f.write(content)
         else:

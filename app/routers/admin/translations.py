@@ -301,6 +301,32 @@ def get_translation_detail(
     }
 
 
+@router.delete("/{translation_id}")
+def delete_translation(
+    translation_id: str,
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    import uuid
+
+    try:
+        trans_uuid = uuid.UUID(translation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid translation_id format")
+
+    translation = db.query(Translation).filter(Translation.id == trans_uuid).first()
+    if not translation:
+        raise HTTPException(status_code=404, detail="Translation not found")
+
+    db.query(TranslationJob).filter(TranslationJob.translation_id == translation.id).delete(
+        synchronize_session=False
+    )
+    db.delete(translation)
+    db.commit()
+
+    return {"message": "Translation deleted", "translation_id": str(trans_uuid)}
+
+
 @router.get("/{translation_id}/download")
 def download_translation(
     translation_id: str,

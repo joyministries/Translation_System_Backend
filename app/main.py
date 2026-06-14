@@ -67,7 +67,7 @@ from app.routers.student.translate import list_book_translations, list_exam_tran
 from app.database import get_db
 from app.models.user import User
 from app.utils.security import require_role
-from fastapi import Depends, Query
+from fastapi import Depends
 
 shared_router = APIRouter(prefix="/translations", tags=["Translations"])
 
@@ -83,7 +83,7 @@ def shared_list_exam_translations(exam_id: str, current_user: User = Depends(req
 def shared_download(
     translation_id: str,
     format: str = "pdf",
-    cache_variant: str | None = Query(None, pattern=r"^[A-Za-z0-9_-]{1,40}$"),
+    cache_variant: str | None = None,
     refresh_cache: bool = False,
     current_user: User = Depends(require_role("admin","student","teacher","translator")),
     db=Depends(get_db),

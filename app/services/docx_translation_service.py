@@ -298,6 +298,8 @@ def _apply_translated_toc_entries(body: etree._Element, translated_lines: list[s
     seen: set[str] = set()
     for line in translated_lines[start + 1:]:
         clean = _strip_toc_dot_leaders(line)
+        if _line_looks_like_toc_title(clean):
+            continue
         if not _line_looks_like_toc_candidate(clean):
             continue
         key = clean.casefold()
@@ -310,11 +312,6 @@ def _apply_translated_toc_entries(body: etree._Element, translated_lines: list[s
 
     for para, replacement in zip(toc_paras, candidates):
         _replace_paragraph_text(para, replacement)
-
-    for para in toc_paras:
-        clean = _strip_toc_dot_leaders(_paragraph_text(para))
-        if clean:
-            _replace_paragraph_text(para, clean)
 
 
 def _remove_child(parent: etree._Element | None, child_name: str) -> None:
@@ -932,6 +929,16 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
     the TOC because the original-tables renderer kept the Word structure intact.
     """
     translated_lines = [line.strip() for line in (translated_text or "").splitlines() if line.strip()]
+    if translated_lines:
+        deduped_lines = []
+        prev_norm = None
+        for line in translated_lines:
+            norm = re.sub(r'\s+', ' ', line).upper()
+            if norm and norm == prev_norm:
+                continue
+            deduped_lines.append(line)
+            prev_norm = norm
+        translated_lines = deduped_lines
     # The workbook structure preserves only the cover page unchanged. Cached
     # translated text still contains that cover line, so skip it before applying
     # translations to the title/manual/body pages.
@@ -948,6 +955,39 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                 body = tree.find(f".//{{{W}}}body")
                 if body is not None:
                     _apply_translated_toc_entries(body, translated_lines)
+                    _body_paragraphs = body.findall(f".//{{{W}}}p")
+                    _toc_title_seen = False
+                    for _idx, _para in enumerate(_body_paragraphs[:120]):
+                        _text = re.sub(r"\s+", " ", _paragraph_text(_para).strip())
+                        if not _text or not _line_looks_like_toc_title(_text):
+                            continue
+                        if not _toc_title_seen:
+                            _toc_title_seen = True
+                            continue
+                        if _has_ancestor_named(_para, {"txbxContent", "drawing", "pict", "AlternateContent"}):
+                            continue
+                        _parent = _para.getparent()
+                        while _parent is not None and etree.QName(_parent).localname != "body":
+                            _parent = _parent.getparent()
+                        if _parent is not None:
+                            try:
+                                _parent.remove(_para)
+                            except Exception:
+                                _direct_parent = _para.getparent()
+                                if _direct_parent is not None:
+                                    _direct_parent.remove(_para)
+                    _body_paragraphs = body.findall(f".//{{{W}}}p")
+                    for _idx in range(len(_body_paragraphs) - 1):
+                        _current_text = re.sub(r"\s+", " ", _paragraph_text(_body_paragraphs[_idx]).strip())
+                        _next_text = re.sub(r"\s+", " ", _paragraph_text(_body_paragraphs[_idx + 1]).strip())
+                        if not _current_text or _current_text != _next_text:
+                            continue
+                        _current_para = _body_paragraphs[_idx]
+                        if _has_ancestor_named(_current_para, {"txbxContent", "drawing", "pict", "AlternateContent"}):
+                            continue
+                        parent = _current_para.getparent()
+                        if parent is not None:
+                            parent.remove(_current_para)
                     cover_end = _find_preserved_front_end(body, pages=1)
                     format_start = _find_body_start_after_toc(body, cover_end)
                     front_matter_end = max(cover_end, format_start - 1)
