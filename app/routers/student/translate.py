@@ -1515,19 +1515,19 @@ def download_translation(
                                         overlay=True,
                                     )
                     # --- Build body from stored translation using original PDF line styles ---
-                    heading_style = ParagraphStyle("H", fontName=reportlab_bold_name, fontSize=15, spaceBefore=14, spaceAfter=6, leading=19, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
-                    chapter_heading_style = ParagraphStyle("HC", fontName=reportlab_bold_name, fontSize=15, spaceBefore=14, spaceAfter=6, leading=19, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
-                    intro_title_style = ParagraphStyle("IT", fontName=reportlab_bold_name, fontSize=15, spaceBefore=8, spaceAfter=6, leading=19, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
-                    subhead_style = ParagraphStyle("SH", fontName=reportlab_bold_name, fontSize=9.5, spaceBefore=6, spaceAfter=2, leading=12, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
-                    warning_line_style = ParagraphStyle("WARN", fontName=reportlab_bold_name, fontSize=8, spaceBefore=8, spaceAfter=2, leading=10, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
-                    toc_line_style = ParagraphStyle("TOC", fontName=reportlab_regular_name, fontSize=12, spaceBefore=0, spaceAfter=8, leading=18, alignment=TA_LEFT, splitLongWords=0)
-                    body_style = ParagraphStyle("B", fontName=reportlab_regular_name, fontSize=10, spaceBefore=1.2, spaceAfter=1.2, leading=13.5, alignment=TA_LEFT, splitLongWords=0)
-                    body_style_bold = ParagraphStyle("BB", fontName=reportlab_bold_name, fontSize=10, spaceBefore=1.2, spaceAfter=1.2, leading=13.5, alignment=TA_LEFT, splitLongWords=0)
-                    reference_style = ParagraphStyle("REF", fontName=reportlab_regular_name, fontSize=8, spaceBefore=1, spaceAfter=1, leading=10, alignment=TA_LEFT, wordWrap="CJK")
-                    table_cell_style = ParagraphStyle("TC", fontName=reportlab_regular_name, fontSize=9.5, spaceBefore=0, spaceAfter=0, leading=12, alignment=TA_LEFT, splitLongWords=0)
-                    table_header_style = ParagraphStyle("TH", fontName=reportlab_bold_name, fontSize=9.5, spaceBefore=0, spaceAfter=0, leading=12, alignment=TA_LEFT, splitLongWords=0)
+                    heading_style = ParagraphStyle("H", fontName=reportlab_bold_name, fontSize=15, spaceBefore=4, spaceAfter=2, leading=15, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
+                    chapter_heading_style = ParagraphStyle("HC", fontName=reportlab_bold_name, fontSize=15, spaceBefore=4, spaceAfter=2, leading=15, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
+                    intro_title_style = ParagraphStyle("IT", fontName=reportlab_bold_name, fontSize=15, spaceBefore=3, spaceAfter=1, leading=15, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
+                    subhead_style = ParagraphStyle("SH", fontName=reportlab_bold_name, fontSize=9.5, spaceBefore=2, spaceAfter=1, leading=10.5, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
+                    warning_line_style = ParagraphStyle("WARN", fontName=reportlab_bold_name, fontSize=8, spaceBefore=3, spaceAfter=1, leading=9.5, alignment=TA_LEFT, keepWithNext=1, splitLongWords=0)
+                    toc_line_style = ParagraphStyle("TOC", fontName=reportlab_regular_name, fontSize=12, spaceBefore=0, spaceAfter=2, leading=10.5, alignment=TA_LEFT, splitLongWords=0)
+                    body_style = ParagraphStyle("B", fontName=reportlab_regular_name, fontSize=10, spaceBefore=0, spaceAfter=0, leading=10.5, alignment=TA_LEFT, splitLongWords=0)
+                    body_style_bold = ParagraphStyle("BB", fontName=reportlab_bold_name, fontSize=10, spaceBefore=0, spaceAfter=0, leading=10.5, alignment=TA_LEFT, splitLongWords=0)
+                    reference_style = ParagraphStyle("REF", fontName=reportlab_regular_name, fontSize=8, spaceBefore=0, spaceAfter=0, leading=9, alignment=TA_LEFT, wordWrap="CJK")
+                    table_cell_style = ParagraphStyle("TC", fontName=reportlab_regular_name, fontSize=9.5, spaceBefore=0, spaceAfter=0, leading=10.5, alignment=TA_LEFT, splitLongWords=0)
+                    table_header_style = ParagraphStyle("TH", fontName=reportlab_bold_name, fontSize=9.5, spaceBefore=0, spaceAfter=0, leading=10.5, alignment=TA_LEFT, splitLongWords=0)
                     indent_style = ParagraphStyle("IND", fontName=reportlab_regular_name, fontSize=10,
-                        leftIndent=16, spaceBefore=1.2, spaceAfter=1.2, leading=13.5, alignment=TA_LEFT, splitLongWords=0)
+                        leftIndent=16, spaceBefore=0, spaceAfter=0, leading=10.5, alignment=TA_LEFT, splitLongWords=0)
 
                     def _new_body_doc(buffer):
                         return SimpleDocTemplate(
@@ -1950,9 +1950,26 @@ def download_translation(
                             normalized_parts.append(part)
                         return normalized_parts
 
+                    def _looks_like_toc_entry_title(candidate):
+                        value = _clean_toc_entry_text(candidate)
+                        if not value:
+                            return False
+                        if len(value) > 120:
+                            return False
+                        if _re.search(r'[;!?]', value):
+                            return False
+                        if value.count('.') > 1:
+                            return False
+                        words = _re.findall(r"[\wÀ-ÿ’'-]+", value)
+                        if len(words) > 16:
+                            return False
+                        if any(w[:1].islower() for w in words[1:] if len(w) > 2):
+                            return False
+                        return True
+
                     def _is_workbook_toc_entry_line(value):
                         candidate = _clean_toc_entry_text(value)
-                        if not candidate:
+                        if not candidate or not _looks_like_toc_entry_title(candidate):
                             return False
                         if _is_toc_heading_like_line(candidate) or _exam_heading_like_line(candidate):
                             return False
@@ -2589,7 +2606,7 @@ def download_translation(
                                         continue
                                     _is_intro = bool(introduction_pattern.match(_value)) and not _seen_chapter
                                     _is_major = _is_intro or bool(_chapter_re.match(_value)) or bool(_section_re.match(_value)) or bool(_terminal_re.match(_value))
-                                    if not _is_major:
+                                    if not _is_major or not _looks_like_toc_entry_title(_value):
                                         continue
                                     if _seen_chapter and introduction_pattern.match(_value):
                                         continue
@@ -5486,15 +5503,15 @@ def download_translation(
                         bottomMargin=0.68 * inch,
                     )
 
-                    title_style = ParagraphStyle("DocxTitle", fontName=docx_bold_name, fontSize=18, leading=22, alignment=TA_LEFT, spaceAfter=10, splitLongWords=0)
-                    cover_style = ParagraphStyle("DocxCover", fontName=docx_bold_name, fontSize=16, leading=20, alignment=TA_CENTER, spaceAfter=8, splitLongWords=0)
-                    heading_style = ParagraphStyle("DocxHeading", fontName=docx_bold_name, fontSize=15, leading=19, alignment=TA_LEFT, spaceBefore=8, spaceAfter=6, splitLongWords=0)
-                    subhead_style = ParagraphStyle("DocxSub", fontName=docx_bold_name, fontSize=9.5, leading=12, alignment=TA_LEFT, spaceBefore=6, spaceAfter=2, splitLongWords=0)
-                    body_style = ParagraphStyle("DocxBody", fontName=docx_regular_name, fontSize=10, leading=13.5, alignment=TA_LEFT, spaceBefore=1.2, spaceAfter=6, splitLongWords=0)
+                    title_style = ParagraphStyle("DocxTitle", fontName=docx_bold_name, fontSize=18, leading=18, alignment=TA_LEFT, spaceAfter=0, splitLongWords=0)
+                    cover_style = ParagraphStyle("DocxCover", fontName=docx_bold_name, fontSize=16, leading=16, alignment=TA_CENTER, spaceAfter=0, splitLongWords=0)
+                    heading_style = ParagraphStyle("DocxHeading", fontName=docx_bold_name, fontSize=15, leading=15, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
+                    subhead_style = ParagraphStyle("DocxSub", fontName=docx_bold_name, fontSize=9.5, leading=10.5, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
+                    body_style = ParagraphStyle("DocxBody", fontName=docx_regular_name, fontSize=10, leading=10.5, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
                     table_cell_style = ParagraphStyle("DocxTableCell", fontName=docx_regular_name, fontSize=8.5, leading=10.5, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
                     table_header_style = ParagraphStyle("DocxTableHeader", fontName=docx_bold_name, fontSize=8.5, leading=10.5, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
-                    toc_style = ParagraphStyle("DocxToc", fontName=docx_regular_name, fontSize=12, leading=18, alignment=TA_LEFT, spaceBefore=0, spaceAfter=7, splitLongWords=0)
-                    warn_style = ParagraphStyle("DocxWarn", fontName=docx_bold_name, fontSize=9, leading=12, alignment=TA_LEFT, spaceBefore=8, spaceAfter=4, splitLongWords=0)
+                    toc_style = ParagraphStyle("DocxToc", fontName=docx_regular_name, fontSize=12, leading=10.5, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
+                    warn_style = ParagraphStyle("DocxWarn", fontName=docx_bold_name, fontSize=9, leading=10.5, alignment=TA_LEFT, spaceBefore=0, spaceAfter=0, splitLongWords=0)
 
                     story = []
 

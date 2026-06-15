@@ -473,19 +473,23 @@ def _paragraph_alignment(para: etree._Element) -> str:
 
 def _remove_empty_body_paragraphs(body: etree._Element, cover_end: int) -> None:
     direct_paragraphs = body.findall(f"{{{W}}}p")
+    keep_one_blank = False
     for idx in range(len(direct_paragraphs) - 1, -1, -1):
         if idx <= cover_end:
             continue
         para = direct_paragraphs[idx]
-        if _paragraph_text(para).strip():
+        has_text = bool(_paragraph_text(para).strip())
+        has_drawing = para.find(f".//{{{W}}}drawing") is not None or para.find(f".//{{{W}}}pict") is not None
+        has_section = para.find(f"{{{W}}}pPr/{{{W}}}sectPr") is not None
+        if has_text or has_drawing or has_section:
+            keep_one_blank = False
             continue
-        if para.find(f".//{{{W}}}drawing") is not None or para.find(f".//{{{W}}}pict") is not None:
+        if keep_one_blank:
+            parent = para.getparent()
+            if parent is not None:
+                parent.remove(para)
             continue
-        if para.find(f"{{{W}}}pPr/{{{W}}}sectPr") is not None:
-            continue
-        parent = para.getparent()
-        if parent is not None:
-            parent.remove(para)
+        keep_one_blank = True
 
 
 def _normalize_body_spacing(body: etree._Element, cover_end: int) -> None:
