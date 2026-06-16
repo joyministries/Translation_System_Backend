@@ -138,6 +138,21 @@ def _batch_translate(texts: list[str], source_lang: str, target_lang: str) -> li
     return results
 
 
+def _translate_heading_text(text: str, source_lang: str, target_lang: str) -> str:
+    """Translate a short heading while preserving its structural shape."""
+    translated = translate_chunk(text, source_lang, target_lang)
+    if not translated:
+        return text
+    translated = translated.strip()
+    if not translated:
+        return text
+    if text.isupper():
+        return translated.upper()
+    if text[:1].isupper() and text[1:].islower():
+        return translated[:1].upper() + translated[1:]
+    return translated
+
+
 def _translate_excel_json(original_text: str, source_lang: str, target_lang: str) -> str:
     """Translate cell values and sheet names in batches."""
     try:

@@ -231,8 +231,6 @@ def _iter_translatable_paragraphs(body: etree._Element, cover_end: int):
     for para in body.findall(f".//{{{W}}}p"):
         if id(para) in cover_ids:
             continue
-        if _is_toc_paragraph(para):
-            continue
         if _has_ancestor_named(para, {"txbxContent", "drawing", "pict", "AlternateContent"}):
             continue
         if para.find(f".//{{{W}}}drawing") is not None and not _paragraph_text(para).strip():
@@ -259,7 +257,11 @@ def _line_looks_like_toc_candidate(line: str) -> bool:
     if letters and len(uppers) / len(letters) >= 0.55:
         return True
     return bool(re.match(
-        r"(?i)^(chapter|section|part|appendix|bibliography|preface|introduction|course introduction|"
+        r"(?i)^(chapter|kapitel|abschnitt|teil|"
+        r"cap[ií]tulo|capitolo|sezione|"
+        r"section|secci[oó]n|part|parte|appendix|appendice|"
+        r"bibliography|bibliograf[ií]a|preface|pr[oó]logo|introduction|introducci[oó]n|"
+        r"conclusion|conclusi[oó]n|course introduction|"
         r"sura|sehemu|dibaji|utangulizi|bibliografia|"
         r"isahluko|isigaba|isingeniso|"
         r"chitsauko|nhanganyaya|"
@@ -269,14 +271,126 @@ def _line_looks_like_toc_candidate(line: str) -> bool:
 
 
 def _line_looks_like_toc_title(line: str) -> bool:
-    return bool(re.search(r"(?i)(contents|yaliyomo|okuqukethwe|zviri\s+mukati|inhoud)", line or ""))
+    clean = re.sub(r"\s+", " ", (line or "").strip())
+    return bool(re.search(
+        r"(?i)\b(table\s+of\s+contents|contents|tabla\s+de\s+contenido(?:s)?|"
+        r"sommario|indice|"
+        r"yaliyomo|okuqukethwe|zviri\s+mukati|inhoud)\b",
+        clean,
+    ))
 
 
 def _strip_toc_dot_leaders(text: str) -> str:
     """Keep TOC entry text/page numbers, but remove dotted leader fill."""
     clean = re.sub(r"\s+", " ", (text or "").strip())
     clean = re.sub(r"\.{3,}|…{2,}", " ", clean)
+    clean = re.sub(r"(?<=[^\W\d_])(?=\d{1,4}$)", " ", clean)
     return re.sub(r"\s+", " ", clean).strip()
+
+
+def _line_is_toc_noise(text: str) -> bool:
+    """Lines that must never be treated as TOC entries (language-agnostic)."""
+    clean = re.sub(r"\s+", " ", (text or "").strip())
+    if not clean:
+        return True
+    if re.search(r"(https?://|www\.|mailto:|\S+@\S+\.\S+)", clean, re.IGNORECASE):
+        return True
+    if re.match(r"^\d+\s*(https?://|www\.)", clean, re.IGNORECASE):
+        return True
+    if re.search(r"(?i)\b(pp?\.|publishers?|publications?|press)\b", clean) and re.search(r"\d{4}", clean):
+        return True
+    words = re.findall(r"[^\W\d_]+", clean, flags=re.UNICODE)
+    if len(words) > 26 or len(clean) > 200:
+        return True
+    if len(words) > 14 and re.search(r"[.!?;:]$", clean):
+        return True
+    return False
+
+
+def _score_toc_entry_line(text: str) -> int:
+    """Higher score = more likely a real TOC entry (language-agnostic)."""
+    clean = _strip_toc_dot_leaders(text)
+    if not clean or _line_is_toc_noise(clean):
+        return -100
+    if _line_looks_like_toc_title(clean) or _is_copyright_line(clean):
+        return -50
+
+    score = 0
+    if re.search(r"\b\d{1,4}$", clean):
+        score += 4
+    if _line_looks_like_toc_candidate(clean):
+        score += 3
+    words = re.findall(r"[^\W\d_]+", clean, flags=re.UNICODE)
+    if ":" in clean and len(words) <= 18 and len(clean) <= 150:
+        score += 2
+    letters = re.findall(r"[^\W\d_]", clean, flags=re.UNICODE)
+    if letters:
+        uppers = [ch for ch in letters if ch.upper() == ch and ch.lower() != ch]
+        if len(uppers) / len(letters) >= 0.55 and len(clean) <= 120:
+            score += 1
+    return score
+
+
+def _find_toc_title_index(translated_lines: list[str]) -> int:
+    """Return index of the last explicit TOC title in front matter."""
+    last = -1
+    for idx, line in enumerate(translated_lines[:450]):
+        if _line_looks_like_toc_title(line):
+            last = idx
+    return last
+
+
+def _collect_toc_candidates(translated_lines: list[str], start: int, needed: int) -> list[str]:
+    """Pick the best contiguous TOC-like block after the TOC title."""
+    if start < 0 or needed <= 0:
+        return []
+
+    normalized: list[tuple[str, int]] = []
+    pending: str | None = None
+    for line in translated_lines[start + 1 : start + 1 + 400]:
+        clean = _strip_toc_dot_leaders(line)
+        if not clean:
+            continue
+        if clean.isdigit() and pending is not None:
+            normalized.append((f"{pending} {clean}".strip(), _score_toc_entry_line(f"{pending} {clean}")))
+            pending = None
+            continue
+        if _line_looks_like_toc_title(clean) or _is_copyright_line(clean):
+            continue
+        score = _score_toc_entry_line(clean)
+        if score >= 2:
+            normalized.append((clean, score))
+            pending = None
+        elif score >= 1 and ":" in clean:
+            pending = clean
+        else:
+            pending = None
+
+    if not normalized:
+        return []
+
+    if len(normalized) <= needed:
+        return [text for text, _ in normalized if _ >= 1]
+
+    best_start = 0
+    best_avg = -1.0
+    for window_start in range(0, len(normalized) - needed + 1):
+        window = normalized[window_start : window_start + needed]
+        if any(score < 1 for _, score in window):
+            continue
+        avg = sum(score for _, score in window) / needed
+        if avg > best_avg:
+            best_avg = avg
+            best_start = window_start
+
+    if best_avg >= 1:
+        return [text for text, _ in normalized[best_start : best_start + needed]]
+
+    # Fallback: keep the strongest lines in order.
+    strong = [(text, score) for text, score in normalized if score >= 2]
+    if len(strong) >= needed:
+        return [text for text, _ in strong[:needed]]
+    return [text for text, score in normalized if score >= 1][:needed]
 
 
 def _apply_translated_toc_entries(body: etree._Element, translated_lines: list[str]) -> None:
@@ -288,30 +402,55 @@ def _apply_translated_toc_entries(body: etree._Element, translated_lines: list[s
     if not toc_paras:
         return
 
-    start = 0
-    for idx, line in enumerate(translated_lines):
-        if _line_looks_like_toc_title(line):
-            start = idx
-            break
+    for para in toc_paras:
+        _remove_toc_tab_leaders(para)
 
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for line in translated_lines[start + 1:]:
-        clean = _strip_toc_dot_leaders(line)
-        if _line_looks_like_toc_title(clean):
-            continue
-        if not _line_looks_like_toc_candidate(clean):
-            continue
-        key = clean.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        candidates.append(clean)
-        if len(candidates) >= len(toc_paras):
-            break
 
-    for para, replacement in zip(toc_paras, candidates):
-        _replace_paragraph_text(para, replacement)
+def _apply_toc_from_body_headings(body: etree._Element, cover_end: int) -> None:
+    """Replace TOC1 paragraph text with translated Heading1 body headings.
+
+    Runs after body translation so Heading1 paragraphs already contain
+    translated text. This gives us the correct chapter/section-level entries
+    for the TOC instead of guessing from arbitrary body text.
+    """
+    toc_paras = [
+        para
+        for para in body.findall(f".//{{{W}}}p")
+        if _is_toc_paragraph(para) and _paragraph_text(para).strip()
+    ]
+    if not toc_paras:
+        return
+
+    direct_paras = body.findall(f"{{{W}}}p")
+    cover_ids = {id(p) for p in direct_paras[: cover_end + 1]} if cover_end >= 0 else set()
+
+    heading_texts: list[str] = []
+    toc_title_text: str | None = None
+
+    for para in body.findall(f".//{{{W}}}p"):
+        if id(para) in cover_ids:
+            continue
+        text = _paragraph_text(para).strip()
+        if not text:
+            continue
+        style = _paragraph_style_value(para).lower()
+        if style == "heading1":
+            if _line_looks_like_toc_title(text):
+                toc_title_text = text
+            else:
+                heading_texts.append(text)
+
+    if not heading_texts:
+        return
+
+    if toc_title_text:
+        _replace_paragraph_text(toc_paras[0], toc_title_text)
+
+    for toc_para, heading_text in zip(toc_paras[1:], heading_texts):
+        _replace_paragraph_text(toc_para, heading_text)
+
+    for para in toc_paras[1 + len(heading_texts):]:
+        _clear_paragraph_text(para)
 
 
 def _remove_child(parent: etree._Element | None, child_name: str) -> None:
@@ -364,6 +503,14 @@ def _is_legal_credit_text(text: str) -> bool:
         r"international bible society|tyndale house|used by permission|all rights reserved)",
         clean,
     ))
+
+
+def _is_copyright_line(text: str) -> bool:
+    """Lines we must keep in source language (copyright/attribution)."""
+    clean = re.sub(r"\s+", " ", (text or "").strip())
+    if not clean:
+        return False
+    return bool(re.search(r"(?i)(©|copyright)", clean))
 
 
 def _is_tail_promo_start_text(text: str) -> bool:
@@ -782,12 +929,24 @@ def _should_center_heading_text(text: str) -> bool:
     clean = re.sub(r"\s+", " ", (text or "").strip())
     if not clean:
         return False
-    if _line_looks_like_toc_title(clean):
-        return True
     return bool(re.match(
         r"(?i)^(chapter|sura(?:\s+ya)?|isahluko|chitsauko|hoofstuk|section|sehemu|isigaba)\b",
         clean,
     ))
+
+
+def _left_align_table_of_contents(body: etree._Element, front_matter_end: int) -> None:
+    """Force left alignment for TOC paragraphs and front-matter TOC titles."""
+    direct_paragraphs = body.findall(f"{{{W}}}p")
+    front_ids = {id(p) for p in direct_paragraphs[: front_matter_end + 1]} if front_matter_end >= 0 else set()
+    for para in body.findall(f".//{{{W}}}p"):
+        text = _paragraph_text(para).strip()
+        if not text:
+            continue
+        if _is_toc_paragraph(para) or (
+            id(para) in front_ids and _line_looks_like_toc_title(text)
+        ):
+            _set_left_alignment(para)
 
 
 def _center_title_paragraphs(body: etree._Element, cover_end: int) -> None:
@@ -821,25 +980,41 @@ def _remove_toc_tab_leaders(para: etree._Element) -> None:
 
 
 def _strip_front_matter_toc_dot_leaders(body: etree._Element, front_matter_end: int) -> None:
-    # TOC entries can live in tables/content controls, so scan all paragraphs.
+    # TOC entries can live in tables/content controls. Restrict cleanup to front
+    # matter so body content with ellipses/page-like numbers is not rewritten.
+    direct_paragraphs = body.findall(f"{{{W}}}p")
+    front_ids = {id(p) for p in direct_paragraphs[: front_matter_end + 1]} if front_matter_end >= 0 else set()
     for para in body.findall(f".//{{{W}}}p"):
+        # Some TOC rows are nested in content controls/tables and are not direct
+        # body paragraphs. Process those TOC paragraphs even if outside front_ids.
+        if id(para) not in front_ids and not _is_toc_paragraph(para):
+            continue
         text = _paragraph_text(para).strip()
+        has_dot_tab = _paragraph_has_dot_leader_tab(para)
         if not text:
+            if has_dot_tab:
+                _remove_toc_tab_leaders(para)
             continue
         has_dot_text = bool(re.search(r"\.{3,}|…{2,}", text))
-        has_dot_tab = _paragraph_has_dot_leader_tab(para)
         if not has_dot_text and not has_dot_tab:
             continue
         clean = _strip_toc_dot_leaders(text)
-        if not clean or len(clean) > 180:
+        if not clean:
+            # Dot-leader-only TOC rows can become visually empty but still carry tab
+            # leader nodes; clear both text and leader tabs so no dotted line renders.
+            _clear_paragraph_text(para)
+            _remove_toc_tab_leaders(para)
             continue
-        if _line_looks_like_toc_candidate(clean) or _line_looks_like_toc_title(clean):
+        if len(clean) > 180:
+            continue
+        if (
+            _line_looks_like_toc_candidate(clean)
+            or _line_looks_like_toc_title(clean)
+            or re.search(r"\d{1,4}$", clean)
+        ):
             _replace_paragraph_text(para, clean)
             _remove_toc_tab_leaders(para)
-            if _line_looks_like_toc_title(clean):
-                _set_center_alignment(para)
-            else:
-                _set_left_alignment(para)
+            _set_left_alignment(para)
 
 
 def _force_tail_promo_to_own_page(body: etree._Element, cover_end: int) -> None:
@@ -910,8 +1085,6 @@ def extract_docx_translation_text(docx_bytes: bytes) -> str:
 
     lines: list[str] = []
     for para in body.findall(f".//{{{W}}}p"):
-        if _is_toc_paragraph(para):
-            continue
         if _has_ancestor_named(para, {"txbxContent", "drawing", "pict", "AlternateContent"}):
             continue
         current = _paragraph_text(para).strip()
@@ -958,7 +1131,6 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                 tree = etree.fromstring(data)
                 body = tree.find(f".//{{{W}}}body")
                 if body is not None:
-                    _apply_translated_toc_entries(body, translated_lines)
                     _body_paragraphs = body.findall(f".//{{{W}}}p")
                     _toc_title_seen = False
                     for _idx, _para in enumerate(_body_paragraphs[:120]):
@@ -1001,35 +1173,27 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                     _remove_empty_body_paragraphs(body, front_matter_end)
                     for para in _iter_translatable_paragraphs(body, cover_end):
                         current_text = _paragraph_text(para).strip()
-                        if _line_looks_like_toc_title(current_text):
-                            toc_line_index = next(
-                                (idx for idx in range(line_index, len(translated_lines)) if _line_looks_like_toc_title(translated_lines[idx])),
-                                line_index,
-                            )
-                            if toc_line_index < len(translated_lines):
-                                _replace_paragraph_text(para, translated_lines[toc_line_index])
-                                line_index = toc_line_index + 1
-                            continue
-
                         if line_index >= len(translated_lines):
                             break
-                        if _is_legal_credit_text(current_text):
+                        # Keep copyright/attribution lines untouched, but allow
+                        # "All rights reserved..." paragraphs to translate.
+                        if _is_copyright_line(current_text):
                             line_index += 1
                             continue
-                        _replace_paragraph_text(para, translated_lines[line_index])
+                        replacement = translated_lines[line_index]
+                        if _is_toc_paragraph(para):
+                            replacement = _strip_toc_dot_leaders(replacement)
+                        _replace_paragraph_text(para, replacement)
+                        if _is_toc_paragraph(para):
+                            _remove_toc_tab_leaders(para)
                         line_index += 1
 
-                    # Keep front-matter page boundaries, but avoid distributed/justified text stretching there.
+                    # Keep the original document structure as intact as possible.
+                    # Avoid post-processing that can alter page flow for workbook PDFs.
                     _left_align_body_paragraphs(body, cover_end)
                     _center_title_paragraphs(body, cover_end)
                     _strip_front_matter_toc_dot_leaders(body, front_matter_end)
-                    _increase_body_font_size(body, cover_end)
-                    _normalize_body_spacing(body, front_matter_end)
-                    _normalize_flow_paragraphs(body, front_matter_end)
-                    _merge_lowercase_continuations(body, front_matter_end)
-                    _normalize_body_spacing(body, front_matter_end)
-                    _inline_translated_bullets(body, front_matter_end)
-                    _force_tail_promo_to_own_page(body, front_matter_end)
+                    _left_align_table_of_contents(body, front_matter_end)
 
                 data = etree.tostring(tree, xml_declaration=True, encoding="UTF-8", standalone=True)
 
