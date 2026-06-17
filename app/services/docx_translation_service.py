@@ -36,6 +36,52 @@ def _find_preserved_front_end(body: etree._Element, pages: int = 2) -> int:
     return last_break_idx
 
 
+def _find_front_matter_end(body: etree._Element) -> int:
+    """Return the last paragraph index of all front matter (cover, title, extra
+    pages, TOC) — everything before real chapter/section body content begins.
+
+    Strategy: scan paragraphs tracking the last SECT/page-break paragraph seen.
+    The front matter ends at the last such boundary before the first paragraph
+    that has a Heading1 or Heading2 style AND whose text looks like a chapter or
+    section heading (not a sub-heading inside the front matter).
+    We stop at the SECT boundary *before* that first real body heading paragraph.
+    """
+    paras = body.findall(f"{{{W}}}p")
+    last_sect_idx = -1
+
+    for idx, para in enumerate(paras):
+        has_page_boundary = para.find(f".//{{{W}}}sectPr") is not None
+        if not has_page_boundary:
+            for br in para.findall(f".//{{{W}}}br"):
+                if br.get(f"{{{W}}}type", "") == "page":
+                    has_page_boundary = True
+                    break
+
+        if has_page_boundary:
+            last_sect_idx = idx
+            continue
+
+        # Check if this is the first real body heading
+        style = ""
+        ps = para.find(f"{{{W}}}pPr/{{{W}}}pStyle")
+        if ps is not None:
+            style = (ps.get(f"{{{W}}}val") or "").lower()
+
+        if style in ("heading1", "heading2"):
+            text = re.sub(r"\s+", " ", _paragraph_text(para).strip())
+            # Real body headings are chapter/section markers or TOC title
+            if _is_major_body_start_text(text):
+                # The front matter ended at the last sect break before this
+                return last_sect_idx if last_sect_idx >= 0 else idx - 1
+            # Also stop if we see a TOC title heading (INDHOLDSFORTEGNELSE etc.)
+            if _line_looks_like_toc_title(text):
+                # Keep scanning — the TOC itself is still front matter
+                continue
+
+    # No clear body start found — fall back to counting 2 page breaks
+    return _find_preserved_front_end(body, pages=2)
+
+
 def _collect_runs(body: etree._Element, start_idx: int):
     """Collect (t_element, text) pairs from paragraphs after start_idx."""
     paras = body.findall(f"{{{W}}}p")
@@ -488,7 +534,8 @@ def _is_major_body_start_text(text: str) -> bool:
     if not clean:
         return False
     return bool(re.match(
-        r"^(?:CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ|SECTION|SEHEMU|ISIGABA|UTANGULIZI|INTRODUCTION|COURSE\s+INTRODUCTION)\b",
+        r"^(?:CHAPTER|SURA(?:\s+YA)?|CHITSAUKO|CHAPITRE|CAP[IÍ]TULO|ORI|ISAHLUKO|HOOFSTUK|ÌSỌRÍ|SECTION|SEHEMU|ISIGABA|UTANGULIZI|INTRODUCTION|COURSE\s+INTRODUCTION"
+        r"|AFSNIT|DEEL|PART|ABSCHNITT|SECCIÓN|SEZIONE|РАЗДЕЛ|IQXENYE|ICANDELO)\b",
         clean,
         re.IGNORECASE,
     ))
@@ -551,7 +598,11 @@ def _find_body_start_after_toc(body: etree._Element, cover_end: int) -> int:
 
 
 def _remove_body_empty_section_breaks(body: etree._Element, cover_end: int) -> None:
-    """Remove source page-boundary section breaks that orphan translated paragraphs."""
+    """Remove source page-boundary section breaks that orphan translated paragraphs.
+    Only acts on the body after front matter — never touches section breaks within
+    the front matter pages (cover, title, extra pages, TOC) so their page structure
+    is preserved exactly as authored.
+    """
     direct_paragraphs = body.findall(f"{{{W}}}p")
     for idx in range(len(direct_paragraphs) - 1, -1, -1):
         if idx <= cover_end:
@@ -640,7 +691,8 @@ def _remove_empty_body_paragraphs(body: etree._Element, cover_end: int) -> None:
 
 
 def _normalize_body_spacing(body: etree._Element, cover_end: int) -> None:
-    """Remove stale source pagination spacing while preserving real structure."""
+    """Restore pageBreakBefore on chapter headings. Leave all other spacing
+    exactly as authored in the source DOCX so paragraph gaps are preserved."""
     direct_paragraphs = body.findall(f"{{{W}}}p")
     cover_ids = {id(p) for p in direct_paragraphs[: cover_end + 1]} if cover_end >= 0 else set()
 
@@ -652,17 +704,15 @@ def _normalize_body_spacing(body: etree._Element, cover_end: int) -> None:
             continue
 
         p_pr = _ensure_p_pr(para)
-        if not _is_major_body_start_text(text) and not _is_tail_promo_start_text(text):
-            _remove_child(p_pr, "pageBreakBefore")
+        is_chapter_start = _paragraph_is_major_heading(para)
 
-        if _is_major_body_start_text(text):
-            _set_spacing_twips(para, before="120", after="60")
-        elif _paragraph_is_major_heading(para) or (text.isupper() and len(text) <= 180):
-            _set_spacing_twips(para, before="120", after="40")
-        elif _paragraph_alignment(para) == "center":
-            _set_spacing_twips(para, before="60", after="40")
-        else:
-            _set_spacing_twips(para, before="0", after="0")
+        if is_chapter_start:
+            # Ensure section/chapter headings always start on a new page
+            if p_pr.find(f"{{{W}}}pageBreakBefore") is None:
+                p_pr.insert(0, etree.Element(f"{{{W}}}pageBreakBefore"))
+        elif not _is_tail_promo_start_text(text):
+            # Strip pageBreakBefore from non-heading body paragraphs only
+            _remove_child(p_pr, "pageBreakBefore")
 
 
 def _normalize_flow_paragraphs(body: etree._Element, cover_end: int) -> None:
@@ -697,16 +747,15 @@ def _normalize_flow_paragraphs(body: etree._Element, cover_end: int) -> None:
 
 
 def _paragraph_is_major_heading(para: etree._Element) -> bool:
-    text = re.sub(r"\s+", " ", _paragraph_text(para).strip())
     style = _paragraph_style_value(para).lower()
-    if not text:
+    if not _paragraph_text(para).strip():
         return False
-    if style in {"heading1", "heading2", "title"}:
-        return True
-    return bool(re.match(
-        r"(?i)^(chapter|section|part|sura|sehemu|utangulizi|isahluko|isigaba|isingeniso|chitsauko|hoofstuk|yaliyomo|okuqukethwe|contents)\b",
-        text,
-    ))
+    return style in {"heading1", "title"}
+
+
+def _paragraph_is_chapter_heading(para: etree._Element) -> bool:
+    """Heading1/title = section start (own page). Heading2 = chapter under a section (shares page)."""
+    return _paragraph_is_major_heading(para)
 
 
 def _paragraph_starts_new_page_or_section(para: etree._Element) -> bool:
@@ -811,7 +860,7 @@ def _set_run_font_size(run: etree._Element, half_points: str) -> None:
         node.set(f"{{{W}}}val", half_points)
 
 
-def _set_paragraph_line_spacing(para: etree._Element, line_twips: str = "252") -> None:
+def _set_paragraph_line_spacing(para: etree._Element, line_twips: str = "240") -> None:
     p_pr = _ensure_p_pr(para)
     spacing = p_pr.find(f"{{{W}}}spacing")
     if spacing is None:
@@ -838,7 +887,6 @@ def _increase_body_font_size(body: etree._Element, cover_end: int, half_points: 
         for run in para.findall(f".//{{{W}}}r"):
             if run.find(f"{{{W}}}t") is not None:
                 _set_run_font_size(run, half_points)
-        _set_paragraph_line_spacing(para)
 
 
 def _tighten_page_margins(body: etree._Element, cover_end: int) -> None:
@@ -936,16 +984,15 @@ def _should_center_heading_text(text: str) -> bool:
 
 
 def _left_align_table_of_contents(body: etree._Element, front_matter_end: int) -> None:
-    """Force left alignment for TOC paragraphs and front-matter TOC titles."""
+    """Force left alignment for TOC paragraphs and all front-matter content after cover."""
     direct_paragraphs = body.findall(f"{{{W}}}p")
-    front_ids = {id(p) for p in direct_paragraphs[: front_matter_end + 1]} if front_matter_end >= 0 else set()
+    cover_end = _find_preserved_front_end(body, pages=1)
+    front_ids = {id(p) for p in direct_paragraphs[cover_end + 1: front_matter_end + 1]} if front_matter_end >= 0 else set()
     for para in body.findall(f".//{{{W}}}p"):
         text = _paragraph_text(para).strip()
         if not text:
             continue
-        if _is_toc_paragraph(para) or (
-            id(para) in front_ids and _line_looks_like_toc_title(text)
-        ):
+        if _is_toc_paragraph(para) or id(para) in front_ids:
             _set_left_alignment(para)
 
 
@@ -1165,12 +1212,12 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                         if parent is not None:
                             parent.remove(_current_para)
                     cover_end = _find_preserved_front_end(body, pages=1)
-                    format_start = _find_body_start_after_toc(body, cover_end)
-                    front_matter_end = max(cover_end, format_start - 1)
+                    front_matter_end = _find_front_matter_end(body)
                     _relax_pagination_constraints(body, front_matter_end)
                     _remove_body_empty_section_breaks(body, front_matter_end)
                     _tighten_page_margins(body, front_matter_end)
                     _remove_empty_body_paragraphs(body, front_matter_end)
+                    _normalize_body_spacing(body, front_matter_end)
                     for para in _iter_translatable_paragraphs(body, cover_end):
                         current_text = _paragraph_text(para).strip()
                         if line_index >= len(translated_lines):
