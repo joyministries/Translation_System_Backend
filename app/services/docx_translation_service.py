@@ -1066,21 +1066,66 @@ def _strip_front_matter_toc_dot_leaders(body: etree._Element, front_matter_end: 
 
 def _force_tail_promo_to_own_page(body: etree._Element, cover_end: int) -> None:
     direct_paragraphs = body.findall(f"{{{W}}}p")
+
+    def _text_at(idx: int) -> str:
+        return re.sub(r"\s+", " ", _paragraph_text(direct_paragraphs[idx]).strip())
+
+    def _is_external_url_list_line(value: str) -> bool:
+        clean = (value or "").strip().lower()
+        return bool(re.match(r"^(?:\d+\s*)?(?:https?://|www\.)", clean)) and "tiuniversity.com" not in clean
+
+    start_idx = None
     for idx, para in enumerate(direct_paragraphs):
         if idx <= cover_end:
             continue
-        if not _is_tail_promo_start_text(_paragraph_text(para)):
-            continue
-        p_pr = _ensure_p_pr(para)
-        if p_pr.find(f"{{{W}}}pageBreakBefore") is None:
-            p_pr.insert(0, etree.Element(f"{{{W}}}pageBreakBefore"))
-        end_idx = min(len(direct_paragraphs), idx + 6)
-        for promo_idx, promo_para in enumerate(direct_paragraphs[idx:end_idx], start=idx):
-            promo_p_pr = _ensure_p_pr(promo_para)
-            if promo_idx < end_idx - 1 and promo_p_pr.find(f"{{{W}}}keepNext") is None:
-                promo_p_pr.append(etree.Element(f"{{{W}}}keepNext"))
-            _set_center_alignment(promo_para)
+        if _is_tail_promo_start_text(_paragraph_text(para)):
+            start_idx = idx
+            break
+
+    if start_idx is None:
+        anchor_idx = None
+        for idx in range(len(direct_paragraphs) - 1, cover_end, -1):
+            text = _text_at(idx).lower()
+            if "tiuniversity.com" in text or "team impact christian university" in text:
+                anchor_idx = idx
+                break
+        if anchor_idx is not None:
+            # The closing promo is the block after the bibliography/Other URL list.
+            search_start = max(cover_end + 1, anchor_idx - 12)
+            last_external_url_idx = None
+            for idx in range(search_start, anchor_idx):
+                if _is_external_url_list_line(_text_at(idx)):
+                    last_external_url_idx = idx
+            if last_external_url_idx is not None:
+                for idx in range(last_external_url_idx + 1, min(anchor_idx + 1, len(direct_paragraphs))):
+                    if _text_at(idx):
+                        start_idx = idx
+                        break
+            else:
+                for idx in range(anchor_idx, search_start - 1, -1):
+                    text = _text_at(idx)
+                    if not text:
+                        continue
+                    prev_text = _text_at(idx - 1) if idx > cover_end + 1 else ""
+                    if not prev_text or _is_external_url_list_line(prev_text):
+                        start_idx = idx
+                        break
+                if start_idx is None:
+                    start_idx = anchor_idx
+
+    if start_idx is None:
         return
+
+    p_pr = _ensure_p_pr(direct_paragraphs[start_idx])
+    if p_pr.find(f"{{{W}}}pageBreakBefore") is None:
+        p_pr.insert(0, etree.Element(f"{{{W}}}pageBreakBefore"))
+
+    end_idx = min(len(direct_paragraphs), start_idx + 8)
+    for promo_idx, promo_para in enumerate(direct_paragraphs[start_idx:end_idx], start=start_idx):
+        promo_p_pr = _ensure_p_pr(promo_para)
+        if promo_idx < end_idx - 1 and promo_p_pr.find(f"{{{W}}}keepNext") is None:
+            promo_p_pr.append(etree.Element(f"{{{W}}}keepNext"))
+        _set_center_alignment(promo_para)
 
 def translate_docx_bytes(docx_bytes: bytes, translate_fn) -> bytes:
     """
@@ -1240,6 +1285,7 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                     _left_align_body_paragraphs(body, cover_end)
                     _center_title_paragraphs(body, cover_end)
                     _strip_front_matter_toc_dot_leaders(body, front_matter_end)
+                    _force_tail_promo_to_own_page(body, cover_end)
                     _left_align_table_of_contents(body, front_matter_end)
 
                 data = etree.tostring(tree, xml_declaration=True, encoding="UTF-8", standalone=True)
