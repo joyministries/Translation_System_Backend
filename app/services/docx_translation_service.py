@@ -19,20 +19,47 @@ def _find_cover_end(body: etree._Element) -> int:
 
 
 def _find_preserved_front_end(body: etree._Element, pages: int = 2) -> int:
-    """Return the last paragraph index in the preserved front matter pages."""
+    """Return the last paragraph index in the preserved front matter pages.
+
+    Only counts a page boundary as a cover-page break if the content seen so
+    far is sparse (≤ 4 non-empty lines). Books whose page 1 is separated from
+    page 2 by spacing/layout only (no explicit break) fall back to preserving
+    everything before the second non-empty paragraph.
+    """
     page_breaks_seen = 0
     last_break_idx = -1
-    for idx, para in enumerate(body.findall(f"{{{W}}}p")):
+    non_empty_since_last_break = 0
+    paras = body.findall(f"{{{W}}}p")
+    for idx, para in enumerate(paras):
         has_page_boundary = para.find(f".//{{{W}}}sectPr") is not None
         for br in para.findall(f".//{{{W}}}br"):
             if br.get(f"{{{W}}}type", "") == "page":
                 has_page_boundary = True
                 break
+        if _paragraph_text(para).strip():
+            non_empty_since_last_break += 1
         if has_page_boundary:
-            page_breaks_seen += 1
-            last_break_idx = idx
-            if page_breaks_seen >= pages:
-                return idx
+            if non_empty_since_last_break <= 4:
+                # Sparse section — treat as a real cover-page boundary
+                page_breaks_seen += 1
+                last_break_idx = idx
+                non_empty_since_last_break = 0
+                if page_breaks_seen >= pages:
+                    return idx
+            else:
+                # Dense section — not a cover page, stop
+                break
+
+    # No sparse page break found — preserve up to just before the second
+    # non-empty paragraph (page 1 only).
+    if last_break_idx == -1:
+        non_empty = 0
+        for idx, para in enumerate(paras):
+            if _paragraph_text(para).strip():
+                non_empty += 1
+                if non_empty == 2:
+                    return idx - 1
+
     return last_break_idx
 
 
@@ -277,7 +304,7 @@ def _iter_translatable_paragraphs(body: etree._Element, cover_end: int):
     for para in body.findall(f".//{{{W}}}p"):
         if id(para) in cover_ids:
             continue
-        if _has_ancestor_named(para, {"txbxContent", "drawing", "pict", "AlternateContent"}):
+        if _has_ancestor_named(para, {"txbxContent", "drawing", "pict", "AlternateContent", "tbl"}):
             continue
         if para.find(f".//{{{W}}}drawing") is not None and not _paragraph_text(para).strip():
             continue
@@ -508,12 +535,15 @@ def _remove_child(parent: etree._Element | None, child_name: str) -> None:
 
 
 def _relax_pagination_constraints(body: etree._Element, cover_end: int) -> None:
-    """Let translated text split naturally instead of pushing whole blocks to the next page."""
+    """Let translated text split naturally instead of pushing whole blocks to the next page.
+    Skip Heading1/Title paragraphs so their pagination properties remain intact."""
     direct_paragraphs = body.findall(f"{{{W}}}p")
     cover_ids = {id(p) for p in direct_paragraphs[: cover_end + 1]} if cover_end >= 0 else set()
 
     for para in body.findall(f".//{{{W}}}p"):
         if id(para) in cover_ids:
+            continue
+        if _paragraph_is_major_heading(para):
             continue
         p_pr = para.find(f"{{{W}}}pPr")
         if p_pr is None:
@@ -623,15 +653,24 @@ def _remove_body_empty_section_breaks(body: etree._Element, cover_end: int) -> N
 
 
 def _relax_style_pagination_constraints(root: etree._Element) -> None:
-    """Remove style-level pagination locks inherited by translated paragraphs."""
+    """Remove style-level pagination locks inherited by translated paragraphs.
+    Ensure heading styles have pageBreakBefore so chapters start on new pages."""
     for style in root.findall(f".//{{{W}}}style"):
+        style_id = (style.get(f"{{{W}}}styleId") or "").lower()
         p_pr = style.find(f"{{{W}}}pPr")
         if p_pr is None:
             continue
         _remove_child(p_pr, "keepNext")
         _remove_child(p_pr, "keepLines")
         _remove_child(p_pr, "widowControl")
-        _remove_child(p_pr, "pageBreakBefore")
+        if style_id.startswith(("heading1", "title")):
+            # Ensure heading styles force a page break and remove numPr
+            # which can cause LibreOffice to ignore pageBreakBefore.
+            _remove_child(p_pr, "numPr")
+            if p_pr.find(f"{{{W}}}pageBreakBefore") is None:
+                p_pr.insert(0, etree.Element(f"{{{W}}}pageBreakBefore"))
+        else:
+            _remove_child(p_pr, "pageBreakBefore")
 
 
 def _ensure_p_pr(para: etree._Element) -> etree._Element:
@@ -679,7 +718,24 @@ def _remove_empty_body_paragraphs(body: etree._Element, cover_end: int) -> None:
         has_text = bool(_paragraph_text(para).strip())
         has_drawing = para.find(f".//{{{W}}}drawing") is not None or para.find(f".//{{{W}}}pict") is not None
         has_section = para.find(f"{{{W}}}pPr/{{{W}}}sectPr") is not None
-        if has_text or has_drawing or has_section:
+        has_pagebreak = any(br.get(f"{{{W}}}type", "") == "page" for br in para.findall(f".//{{{W}}}br"))
+        if has_pagebreak and not has_text:
+            # Remove mid-section page breaks (before numbered items like "8. ...")
+            # but keep page breaks before chapter headings — those are handled by
+            # pageBreakBefore on the heading itself via _normalize_body_spacing.
+            next_text = ""
+            for j in range(idx + 1, min(idx + 6, len(direct_paragraphs))):
+                next_text = _paragraph_text(direct_paragraphs[j]).strip()
+                if next_text:
+                    break
+            is_mid_section = bool(re.match(r"^\d+\.\s+\S", next_text))
+            if is_mid_section:
+                parent = para.getparent()
+                if parent is not None:
+                    parent.remove(para)
+            keep_one_blank = False
+            continue
+        if has_text or has_drawing or has_section or has_pagebreak:
             keep_one_blank = False
             continue
         if keep_one_blank:
@@ -707,9 +763,30 @@ def _normalize_body_spacing(body: etree._Element, cover_end: int) -> None:
         is_chapter_start = _paragraph_is_major_heading(para)
 
         if is_chapter_start:
-            # Ensure section/chapter headings always start on a new page
-            if p_pr.find(f"{{{W}}}pageBreakBefore") is None:
-                p_pr.insert(0, etree.Element(f"{{{W}}}pageBreakBefore"))
+            # Move any preceding page break INTO the heading's first run.
+            # This ensures the heading always starts the new page (not at
+            # the bottom of the previous page due to shorter translated text).
+            runs = para.findall(f"{{{W}}}r")
+            has_own_br = any(
+                br.get(f"{{{W}}}type", "") == "page"
+                for r in runs for br in r.findall(f"{{{W}}}br")
+            )
+            if not has_own_br and runs:
+                # Check if preceding para has the break — remove it from there
+                para_idx = next((i for i, dp in enumerate(direct_paragraphs) if dp is para), -1)
+                if para_idx > 0:
+                    for j in range(para_idx - 1, max(0, para_idx - 4), -1):
+                        prev_p = direct_paragraphs[j]
+                        for br in prev_p.findall(f".//{{{W}}}br"):
+                            if br.get(f"{{{W}}}type", "") == "page":
+                                br.getparent().remove(br)
+                                has_own_br = False  # we removed it, will add below
+                        if _paragraph_text(prev_p).strip():
+                            break
+                # Add break to heading's first run
+                br_el = etree.Element(f"{{{W}}}br")
+                br_el.set(f"{{{W}}}type", "page")
+                runs[0].insert(0, br_el)
         elif not _is_tail_promo_start_text(text):
             # Strip pageBreakBefore from non-heading body paragraphs only
             _remove_child(p_pr, "pageBreakBefore")
@@ -1177,7 +1254,7 @@ def extract_docx_translation_text(docx_bytes: bytes) -> str:
 
     lines: list[str] = []
     for para in body.findall(f".//{{{W}}}p"):
-        if _has_ancestor_named(para, {"txbxContent", "drawing", "pict", "AlternateContent"}):
+        if _has_ancestor_named(para, {"txbxContent", "drawing", "pict", "AlternateContent", "tbl"}):
             continue
         current = _paragraph_text(para).strip()
         if not current:
@@ -1198,20 +1275,17 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
     the TOC because the original-tables renderer kept the Word structure intact.
     """
     translated_lines = [line.strip() for line in (translated_text or "").splitlines() if line.strip()]
-    if translated_lines:
-        deduped_lines = []
-        prev_norm = None
-        for line in translated_lines:
-            norm = re.sub(r'\s+', ' ', line).upper()
-            if norm and norm == prev_norm:
-                continue
-            deduped_lines.append(line)
-            prev_norm = norm
-        translated_lines = deduped_lines
-    # The workbook structure preserves only the cover page unchanged. Cached
-    # translated text still contains that cover line, so skip it before applying
-    # translations to the title/manual/body pages.
-    line_index = min(PRESERVED_FRONT_TRANSLATED_LINES, len(translated_lines))
+    # Count non-empty lines in the preserved cover so we skip exactly that many
+    # translated lines before starting paragraph replacements.
+    _tmp_body = etree.fromstring(
+        zipfile.ZipFile(io.BytesIO(docx_bytes)).read("word/document.xml")
+    ).find(f".//{{{W}}}body")
+    _cover_end = _find_preserved_front_end(_tmp_body, pages=1) if _tmp_body is not None else -1
+    _cover_line_count = sum(
+        1 for p in (_tmp_body.findall(f"{{{W}}}p") if _tmp_body is not None else [])[:_cover_end + 1]
+        if _paragraph_text(p).strip()
+    ) if _cover_end >= 0 else PRESERVED_FRONT_TRANSLATED_LINES
+    line_index = min(_cover_line_count, len(translated_lines))
     in_buf = io.BytesIO(docx_bytes)
     out_buf = io.BytesIO()
 
@@ -1232,7 +1306,7 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                         if not _toc_title_seen:
                             _toc_title_seen = True
                             continue
-                        if _has_ancestor_named(_para, {"txbxContent", "drawing", "pict", "AlternateContent"}):
+                        if _has_ancestor_named(_para, {"txbxContent", "drawing", "pict", "AlternateContent", "tbl"}):
                             continue
                         _parent = _para.getparent()
                         while _parent is not None and etree.QName(_parent).localname != "body":
@@ -1244,25 +1318,11 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                                 _direct_parent = _para.getparent()
                                 if _direct_parent is not None:
                                     _direct_parent.remove(_para)
-                    _body_paragraphs = body.findall(f".//{{{W}}}p")
-                    for _idx in range(len(_body_paragraphs) - 1):
-                        _current_text = re.sub(r"\s+", " ", _paragraph_text(_body_paragraphs[_idx]).strip())
-                        _next_text = re.sub(r"\s+", " ", _paragraph_text(_body_paragraphs[_idx + 1]).strip())
-                        if not _current_text or _current_text != _next_text:
-                            continue
-                        _current_para = _body_paragraphs[_idx]
-                        if _has_ancestor_named(_current_para, {"txbxContent", "drawing", "pict", "AlternateContent"}):
-                            continue
-                        parent = _current_para.getparent()
-                        if parent is not None:
-                            parent.remove(_current_para)
                     cover_end = _find_preserved_front_end(body, pages=1)
                     front_matter_end = _find_front_matter_end(body)
-                    _relax_pagination_constraints(body, front_matter_end)
                     _remove_body_empty_section_breaks(body, front_matter_end)
                     _tighten_page_margins(body, front_matter_end)
                     _remove_empty_body_paragraphs(body, front_matter_end)
-                    _normalize_body_spacing(body, front_matter_end)
                     for para in _iter_translatable_paragraphs(body, cover_end):
                         current_text = _paragraph_text(para).strip()
                         if line_index >= len(translated_lines):
@@ -1291,9 +1351,7 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                 data = etree.tostring(tree, xml_declaration=True, encoding="UTF-8", standalone=True)
 
             elif item.filename == "word/styles.xml":
-                tree = etree.fromstring(data)
-                _relax_style_pagination_constraints(tree)
-                data = etree.tostring(tree, xml_declaration=True, encoding="UTF-8", standalone=True)
+                pass  # Keep styles.xml unchanged
 
             zout.writestr(item, data)
 

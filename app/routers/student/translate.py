@@ -458,21 +458,6 @@ def download_translation(
         cache_variant = None
 
     text = translation.translated_text
-    if text:
-        _clean_lines = []
-        _prev_norm = None
-        for _line in text.splitlines():
-            _stripped = (_line or '').strip()
-            if not _stripped:
-                _clean_lines.append('')
-                _prev_norm = None
-                continue
-            _norm = _re.sub(r'\s+', ' ', _stripped).upper()
-            if _norm and _norm == _prev_norm:
-                continue
-            _clean_lines.append(_stripped)
-            _prev_norm = _norm
-        text = '\n'.join(_clean_lines)
 
     # Get book cover text if exists
     if translation.content_type == "book":

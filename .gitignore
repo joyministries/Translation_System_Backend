@@ -26,3 +26,4 @@ celerybeat-schedule
 *.sqlite3
 PHASES*.md
 phases*.md
+old_api_keys.txt

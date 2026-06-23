@@ -43,8 +43,13 @@ async def upload_book(
             detail="Invalid file type. Only PDF, DOC, DOCX allowed.",
         ) from exc
 
+    book_title = title or file.filename
+    existing = db.query(Book).filter(Book.title == book_title).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Book already exists: '{book_title}'")
+
     book = Book(
-        title=title or file.filename,
+        title=book_title,
         subject=subject,
         file_path=filename,
         normalized_docx_path=filename if mime_type == DOCX_MIME else None,
