@@ -1244,7 +1244,9 @@ def translate_docx_bytes(docx_bytes: bytes, translate_fn) -> bytes:
 
 
 def extract_docx_translation_text(docx_bytes: bytes) -> str:
-    """Return visible DOCX text in the same paragraph order used by the DOCX renderer."""
+    """Return visible DOCX text in the same paragraph order used by the DOCX renderer.
+    Table cell text is appended after a @@TABLE_CELLS@@ separator so it gets
+    translated but doesn't affect the main paragraph alignment."""
     in_buf = io.BytesIO(docx_bytes)
     with zipfile.ZipFile(in_buf, "r") as zin:
         tree = etree.fromstring(zin.read("word/document.xml"))
@@ -1253,8 +1255,9 @@ def extract_docx_translation_text(docx_bytes: bytes) -> str:
         return ""
 
     lines: list[str] = []
+    table_lines: list[str] = []
     for para in body.findall(f".//{{{W}}}p"):
-        if _has_ancestor_named(para, {"txbxContent", "drawing", "pict", "AlternateContent", "tbl"}):
+        if _has_ancestor_named(para, {"txbxContent", "drawing", "pict", "AlternateContent"}):
             continue
         current = _paragraph_text(para).strip()
         if not current:
@@ -1263,8 +1266,17 @@ def extract_docx_translation_text(docx_bytes: bytes) -> str:
             continue
         if re.match(r"(https?://|www\.|mailto:|\S+@\S+\.\S+)", current):
             continue
+        if _has_ancestor_named(para, {"tbl"}):
+            if not re.match(r"^[\d\s.,;:/-]+$", current):
+                if current not in table_lines:
+                    table_lines.append(current)
+            continue
         lines.append(current)
-    return "\n".join(lines)
+
+    result = "\n".join(lines)
+    if table_lines:
+        result += "\n@@TABLE_CELLS@@\n" + "\n".join(table_lines)
+    return result
 
 def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text: str) -> bytes:
     """
@@ -1274,7 +1286,8 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
     and relies on LibreOffice for PDF layout. It intentionally does not rebuild
     the TOC because the original-tables renderer kept the Word structure intact.
     """
-    translated_lines = [line.strip() for line in (translated_text or "").splitlines() if line.strip()]
+    _main_text = (translated_text or "").split("@@TABLE_CELLS@@")[0]
+    translated_lines = [line.strip() for line in _main_text.splitlines() if line.strip()]
     # Count non-empty lines in the preserved cover so we skip exactly that many
     # translated lines before starting paragraph replacements.
     _tmp_body = etree.fromstring(
@@ -1339,6 +1352,43 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                         if _is_toc_paragraph(para):
                             _remove_toc_tab_leaders(para)
                         line_index += 1
+
+                    # Translate table cell paragraphs separately using the
+                    # @@TABLE_CELLS@@ section from the translated text.
+                    if "@@TABLE_CELLS@@" in (translated_text or ""):
+                        _parts = translated_text.split("@@TABLE_CELLS@@", 1)
+                        _orig_parts = ""
+                        # Get original table cell lines from original docx
+                        _orig_body = etree.fromstring(
+                            zipfile.ZipFile(io.BytesIO(docx_bytes)).read("word/document.xml")
+                        ).find(f".//{{{W}}}body")
+                        _orig_tbl_lines = []
+                        for _op in _orig_body.findall(f".//{{{W}}}p"):
+                            if not _has_ancestor_named(_op, {"tbl"}):
+                                continue
+                            _ot = _paragraph_text(_op).strip()
+                            if _ot and not re.match(r"^[\d\s.,;:/-]+$", _ot):
+                                if not re.match(r"(https?://|www\.|mailto:|\S+@\S+\.\S+)", _ot):
+                                    if _ot not in _orig_tbl_lines:
+                                        _orig_tbl_lines.append(_ot)
+                        _trans_tbl_lines = [l for l in _parts[1].splitlines() if l.strip()]
+                        _tbl_map = {}
+                        for _i, _ot in enumerate(_orig_tbl_lines):
+                            if _i < len(_trans_tbl_lines):
+                                _tbl_map[_ot] = _trans_tbl_lines[_i]
+                        # Apply to table cells
+                        for _tp in body.findall(f".//{{{W}}}p"):
+                            if not _has_ancestor_named(_tp, {"tbl"}):
+                                continue
+                            _tcell = _paragraph_text(_tp).strip()
+                            if not _tcell:
+                                continue
+                            if _tcell in _tbl_map and _tbl_map[_tcell] != _tcell:
+                                _t_nodes = _tp.findall(f".//{{{W}}}t")
+                                if _t_nodes:
+                                    _t_nodes[0].text = _tbl_map[_tcell]
+                                    for _tn in _t_nodes[1:]:
+                                        _tn.text = ""
 
                     # Keep the original document structure as intact as possible.
                     # Avoid post-processing that can alter page flow for workbook PDFs.
