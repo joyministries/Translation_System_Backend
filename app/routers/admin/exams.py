@@ -89,3 +89,27 @@ def list_exams(
             for e in exams
         ],
     }
+
+
+@router.delete("/{exam_id}")
+def delete_exam(
+    exam_id: str,
+    db: Session = Depends(get_db),
+):
+    from app.models.translation import Translation, TranslationJob
+    from app.utils.file_utils import delete_file
+
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    for t in db.query(Translation).filter(Translation.content_id == exam_id).all():
+        db.query(TranslationJob).filter(TranslationJob.translation_id == t.id).delete()
+        db.delete(t)
+
+    if exam.file_path:
+        delete_file(exam.file_path)
+
+    db.delete(exam)
+    db.commit()
+    return {"message": f"Exam '{exam.title}' deleted"}
