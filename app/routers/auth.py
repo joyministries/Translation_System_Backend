@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 import uuid
 import logging
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(request: LoginRequest, db: Session = Depends(get_db)):
+def login(request: LoginRequest, response: Response, db: Session = Depends(get_db)):
     user = AuthService.authenticate(db, request.email, request.password)
     if not user:
         raise HTTPException(
@@ -45,6 +45,24 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     access_token, refresh_token = AuthService.create_tokens(user)
     AuthService.update_last_login(db, user.id)
     touch_user_session(str(user.id))
+
+    # Set HttpOnly cookies
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=60 * 60 * 24,
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 7,
+    )
 
     return TokenResponse(
         access_token=access_token,
@@ -91,6 +109,7 @@ def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
 @router.post("/logout", response_model=MessageResponse)
 def logout(
     request: RefreshRequest,
+    response: Response,
     current_user: User = Depends(
         require_role("admin", "teacher", "student", "translator")
     ),
@@ -98,6 +117,8 @@ def logout(
 ):
     AuthService.blacklist_token(request.refresh_token)
     clear_user_session(str(current_user.id))
+    response.delete_cookie("access_token")
+    response.delete_cookie("refresh_token")
     return MessageResponse(message="Logged out successfully")
 
 

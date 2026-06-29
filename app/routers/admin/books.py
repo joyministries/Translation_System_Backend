@@ -46,7 +46,7 @@ async def upload_book(
     book_title = title or file.filename
     existing = db.query(Book).filter(Book.title == book_title).first()
     if existing:
-        raise HTTPException(status_code=409, detail=f"Book already exists: '{book_title}'")
+        return {"message": "Book already exist", "title": book_title}
 
     book = Book(
         title=book_title,

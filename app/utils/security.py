@@ -5,7 +5,7 @@ import uuid
 import bcrypt
 import redis
 from jose import JWTError, jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import User
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 ALGORITHM = "HS256"
 redis_client = redis.from_url(settings.REDIS_URL)
@@ -108,10 +108,18 @@ def decode_token(token: str) -> dict:
 
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    request: Request,
+    token: str | None = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> User:
-    payload = decode_token(token)
+    # Try HttpOnly cookie first, then Authorization header
+    actual_token = request.cookies.get("access_token") or token
+    if not actual_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+    payload = decode_token(actual_token)
     user_id: str = payload.get("sub")
     if user_id is None:
         raise HTTPException(
