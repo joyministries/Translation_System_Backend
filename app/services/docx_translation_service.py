@@ -131,6 +131,21 @@ def _paragraph_text(para: etree._Element) -> str:
     return "".join(t.text or "" for t in para.findall(f".//{{{W}}}t"))
 
 
+def _paragraph_text_no_superscript(para: etree._Element) -> str:
+    """Return paragraph text excluding superscript runs."""
+    parts = []
+    for t_el in para.findall(f".//{{{W}}}t"):
+        run = t_el.getparent()
+        if run is not None and run.tag == f"{{{W}}}r":
+            rPr = run.find(f"{{{W}}}rPr")
+            if rPr is not None:
+                vert = rPr.find(f"{{{W}}}vertAlign")
+                if vert is not None and vert.get(f"{{{W}}}val") == "superscript":
+                    continue
+        parts.append(t_el.text or "")
+    return "".join(parts)
+
+
 def _run_for_text_node(t_el: etree._Element) -> etree._Element | None:
     current = t_el
     while current is not None and etree.QName(current).localname != "r":
@@ -248,9 +263,20 @@ def _set_text_with_inline_heading_break(t_el: etree._Element, text: str) -> None
     parent.insert(parent.index(run) + 1, new_run)
 
 
+def _is_superscript_text(t_el: etree._Element) -> bool:
+    run = t_el.getparent()
+    if run is not None and run.tag == f"{{{W}}}r":
+        rPr = run.find(f"{{{W}}}rPr")
+        if rPr is not None:
+            vert = rPr.find(f"{{{W}}}vertAlign")
+            if vert is not None and vert.get(f"{{{W}}}val") == "superscript":
+                return True
+    return False
+
+
 def _replace_paragraph_text(para: etree._Element, replacement: str) -> None:
     replacement = _protect_connector_line_breaks(replacement)
-    text_nodes = para.findall(f".//{{{W}}}t")
+    text_nodes = [t for t in para.findall(f".//{{{W}}}t") if not _is_superscript_text(t)]
     if not text_nodes:
         return
 
@@ -1266,12 +1292,14 @@ def extract_docx_translation_text(docx_bytes: bytes) -> str:
             continue
         if re.match(r"(https?://|www\.|mailto:|\S+@\S+\.\S+)", current):
             continue
+        # Use text without superscript for translation
+        translatable = _paragraph_text_no_superscript(para).strip() or current
         if _has_ancestor_named(para, {"tbl"}):
             if not re.match(r"^[\d\s.,;:/-]+$", current):
-                if current not in table_lines:
-                    table_lines.append(current)
+                if translatable not in table_lines:
+                    table_lines.append(translatable)
             continue
-        lines.append(current)
+        lines.append(translatable)
 
     result = "\n".join(lines)
     if table_lines:
