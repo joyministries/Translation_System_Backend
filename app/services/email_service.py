@@ -32,7 +32,7 @@ Temporary Password: {temp_password}
 Please login and change your password immediately.
 
 Best regards,
-Curriculum Management System"""
+Team Impact Christian University"""
 
         msg.attach(MIMEText(body, "plain"))
 
@@ -59,7 +59,7 @@ Curriculum Management System"""
             return False
 
     @staticmethod
-    def send_password_reset_email(to_email: str, reset_token: str) -> bool:
+    def send_password_reset_email(to_email: str, reset_link: str) -> bool:
         if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
             logger.warning("SMTP credentials not configured")
             return False
@@ -73,13 +73,15 @@ Curriculum Management System"""
 
 We received a request to reset your password.
 
-Use this reset token to complete the process:
-{reset_token}
+Click the link below to reset your password:
+{reset_link}
 
-If you did not request this reset, you can ignore this email.
+This link will expire in 1 hour.
+
+If you did not request this reset, please ignore this email.
 
 Best regards,
-Curriculum Management System"""
+Team Impact Christian University"""
 
         msg.attach(MIMEText(body, "plain"))
 

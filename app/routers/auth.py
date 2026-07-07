@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 import uuid
 import logging
 
+from app.config import settings
+
 from app.database import get_db
 from app.schemas.auth import (
     LoginRequest,
@@ -225,7 +227,8 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     if user and user.is_active:
         reset_token = AuthService.generate_password_reset_token()
         AuthService.store_password_reset_token(reset_token, user.id)
-        sent = EmailService.send_password_reset_email(user.email, reset_token)
+        reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
+        sent = EmailService.send_password_reset_email(user.email, reset_link)
         logger.info(
             "Forgot-password email attempt for %s: sent=%s",
             user.email,
@@ -238,7 +241,7 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
         )
 
     return MessageResponse(
-        message="If an account with that email exists, a password reset email has been sent."
+        message="If an account with that email exists, a password reset link has been sent."
     )
 
 

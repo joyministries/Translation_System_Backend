@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = "noreply@curriculum.edu"
+    FRONTEND_URL: str = "http://localhost:3000"
 
     ALLOWED_MIME_TYPES: str = "application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     MAX_UPLOAD_SIZE_MB: int = 50
