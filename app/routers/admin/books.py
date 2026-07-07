@@ -114,7 +114,7 @@ async def upload_book(
     }
 
 
-@router.get("/")
+@router.get("")
 def list_books(
     skip: int = 0,
     limit: int = 20,

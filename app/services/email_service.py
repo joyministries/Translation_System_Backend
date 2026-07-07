@@ -40,11 +40,18 @@ Curriculum Management System"""
             logger.info(
                 f"Sending email to {to_email} via {settings.SMTP_HOST}:{settings.SMTP_PORT}"
             )
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
-                server.starttls()
-                logger.info(f"Logging in as {settings.SMTP_USER}")
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(settings.SMTP_FROM, to_email, msg.as_string())
+            port = int(settings.SMTP_PORT) if settings.SMTP_PORT else 465
+            if port == 465:
+                with smtplib.SMTP_SSL(settings.SMTP_HOST, port) as server:
+                    logger.info(f"Logging in as {settings.SMTP_USER}")
+                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                    server.sendmail(settings.SMTP_FROM, to_email, msg.as_string())
+            else:
+                with smtplib.SMTP(settings.SMTP_HOST, port) as server:
+                    server.starttls()
+                    logger.info(f"Logging in as {settings.SMTP_USER}")
+                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                    server.sendmail(settings.SMTP_FROM, to_email, msg.as_string())
             logger.info(f"Email sent successfully to {to_email}")
             return True
         except Exception as e:
@@ -80,10 +87,16 @@ Curriculum Management System"""
             logger.info(
                 f"Sending password reset email to {to_email} via {settings.SMTP_HOST}:{settings.SMTP_PORT}"
             )
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
-                server.starttls()
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(settings.SMTP_FROM, to_email, msg.as_string())
+            port = int(settings.SMTP_PORT) if settings.SMTP_PORT else 465
+            if port == 465:
+                with smtplib.SMTP_SSL(settings.SMTP_HOST, port) as server:
+                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                    server.sendmail(settings.SMTP_FROM, to_email, msg.as_string())
+            else:
+                with smtplib.SMTP(settings.SMTP_HOST, port) as server:
+                    server.starttls()
+                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                    server.sendmail(settings.SMTP_FROM, to_email, msg.as_string())
             logger.info(f"Password reset email sent successfully to {to_email}")
             return True
         except Exception as e:

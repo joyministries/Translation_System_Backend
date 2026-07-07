@@ -62,7 +62,7 @@ async def import_exam(
     }
 
 
-@router.get("/")
+@router.get("")
 def list_exams(
     skip: int = 0,
     limit: int = 20,
