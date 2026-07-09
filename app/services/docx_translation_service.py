@@ -1370,26 +1370,31 @@ def apply_translated_paragraphs_to_docx_bytes(docx_bytes: bytes, translated_text
                             if toc_match:
                                 replacement = toc_match.group(1).strip()
                             # Only replace text nodes BEFORE the tab — leave tab + page number intact
-                            all_t = para.findall(f".//{{{W}}}t")
-                            # Find which t nodes are before vs after the tab
-                            tab_found = False
                             before_tab = []
+                            after_tab = []
+                            tab_found = False
+                            # Single pass through ALL runs in document order (direct + inside hyperlinks)
                             for _r in para.findall(f".//{{{W}}}r"):
-                                if _r.find(f"{{{W}}}tab") is not None:
-                                    tab_found = True
-                                    continue
-                                for _t in _r.findall(f"{{{W}}}t"):
-                                    if not tab_found:
-                                        before_tab.append(_t)
-                            # Also check inside hyperlinks
-                            for _hl in para.findall(f".//{{{W}}}hyperlink"):
-                                for _r in _hl.findall(f"{{{W}}}r"):
-                                    if _r.find(f"{{{W}}}tab") is not None:
-                                        tab_found = True
-                                        continue
+                                has_tab = _r.find(f"{{{W}}}tab") is not None
+                                if has_tab:
+                                    # Run contains tab — split: elements before tab go to before_tab,
+                                    # elements after tab go to after_tab
+                                    for _child in _r:
+                                        child_tag = etree.QName(_child).localname
+                                        if child_tag == "tab":
+                                            tab_found = True
+                                            continue
+                                        if child_tag == "t":
+                                            if not tab_found:
+                                                before_tab.append(_child)
+                                            else:
+                                                after_tab.append(_child)
+                                else:
                                     for _t in _r.findall(f"{{{W}}}t"):
                                         if not tab_found:
                                             before_tab.append(_t)
+                                        else:
+                                            after_tab.append(_t)
                             if before_tab:
                                 before_tab[0].text = replacement
                                 for _t in before_tab[1:]:
