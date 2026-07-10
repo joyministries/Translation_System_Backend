@@ -35,7 +35,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login")
 def login(request: LoginRequest, response: Response, db: Session = Depends(get_db)):
     user = AuthService.authenticate(db, request.email, request.password)
     if not user:
@@ -66,15 +66,16 @@ def login(request: LoginRequest, response: Response, db: Session = Depends(get_d
         max_age=60 * 60 * 24 * 7,
     )
 
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        must_change_password=bool(user.must_change_password),
-    )
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "must_change_password": bool(user.must_change_password),
+    }
 
 
-@router.post("/refresh", response_model=TokenResponse)
-def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
+@router.post("/refresh")
+def refresh(request: RefreshRequest, response: Response, db: Session = Depends(get_db)):
     payload = decode_token(request.refresh_token)
     if payload.get("type") != "refresh":
         raise HTTPException(
@@ -102,10 +103,24 @@ def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
     AuthService.blacklist_token(request.refresh_token)
     touch_user_session(str(user.id))
 
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=60 * 60 * 24,
     )
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 7,
+    )
+
+    return {"message": "Token refreshed"}
 
 
 @router.post("/logout", response_model=MessageResponse)
@@ -198,6 +213,32 @@ def get_me(
         else None,
         must_change_password=current_user.must_change_password,
     )
+
+
+@router.patch("/me")
+def update_me(
+    updates: dict,
+    current_user: User = Depends(
+        require_role("admin", "teacher", "student", "translator")
+    ),
+    db: Session = Depends(get_db),
+):
+    allowed_fields = {"full_name", "email"}
+    for key, value in updates.items():
+        if key in allowed_fields:
+            setattr(current_user, key, value)
+    if "password" in updates:
+        current_user.hashed_password = get_password_hash(updates["password"])
+        current_user.must_change_password = False
+    db.commit()
+    db.refresh(current_user)
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "role": current_user.role,
+        "message": "Account updated",
+    }
 
 
 @router.post("/change-password", response_model=MessageResponse)

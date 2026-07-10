@@ -468,7 +468,20 @@ def download_translation(
 
     content = None
     media_type = "application/pdf"
-    filename = f"translation_{translation_id}.pdf"
+
+    # Build filename: {language}_{title}.{ext}
+    from app.models import Language
+    _lang = db.query(Language).filter(Language.id == translation.language_id).first()
+    _lang_name = (_lang.name if _lang else "translated").lower().replace(" ", "_")
+    _content_title = ""
+    if translation.content_type == "book":
+        _book_for_name = db.query(Book).filter(Book.id == str(translation.content_id)).first()
+        _content_title = (_book_for_name.title if _book_for_name else "book").replace(" ", "_")
+    elif translation.content_type == "exam":
+        from app.models.exam import Exam
+        _exam_for_name = db.query(Exam).filter(Exam.id == str(translation.content_id)).first()
+        _content_title = (_exam_for_name.title if _exam_for_name else "exam").replace(" ", "_")
+    filename = f"{_lang_name}_{_content_title}.pdf"
 
     # Auto-detect format for exams
     if translation.content_type == "exam":
@@ -4816,7 +4829,7 @@ def download_translation(
                     with open(cached_pdf_path, "wb") as f:
                         f.write(content)
 
-                filename = f"translation_{translation_id}.pdf"
+                filename = f"{_lang_name}_{_content_title}.pdf"
             except Exception as e:
                 import logging, traceback
                 logging.getLogger(__name__).warning(f"PDF translation failed: {e}\n{traceback.format_exc()[-500:]}")
@@ -4935,7 +4948,7 @@ def download_translation(
                                         pass
                                     with open(cached_pdf_path, "wb") as _cache_file:
                                         _cache_file.write(content)
-                                    filename = f"translation_{translation_id}.pdf"
+                                    filename = f"{_lang_name}_{_content_title}.pdf"
                                     return Response(
                                         content=content,
                                         media_type="application/pdf",
@@ -6077,7 +6090,7 @@ def download_translation(
                         f.write(content)
 
                 media_type = "application/pdf"
-                filename = f"translation_{translation_id}.pdf"
+                filename = f"{_lang_name}_{_content_title}.pdf"
 
             except Exception as e:
                 import logging, traceback
@@ -6097,7 +6110,7 @@ def download_translation(
             media_type = (
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            filename = f"translation_{translation_id}.xlsx"
+            filename = f"{_lang_name}_{_content_title}.xlsx"
     elif format == "xlsx":
         book = db.query(Book).filter(Book.id == str(translation.content_id)).first()
         if book and book.file_path and book.file_path.endswith((".xlsx", ".xls")):
@@ -6109,7 +6122,7 @@ def download_translation(
             media_type = (
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            filename = f"translation_{translation_id}.xlsx"
+            filename = f"{_lang_name}_{_content_title}.xlsx"
     elif format == "docx":
         from app.services.doc_service import create_translated_docx
 
@@ -6142,7 +6155,7 @@ def download_translation(
         media_type = (
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
-        filename = f"translation_{translation_id}.docx"
+        filename = f"{_lang_name}_{_content_title}.docx"
     elif content is None:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
