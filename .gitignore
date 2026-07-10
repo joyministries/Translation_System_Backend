@@ -27,3 +27,4 @@ celerybeat-schedule
 PHASES*.md
 phases*.md
 old_api_keys.txt
+hackerone_backeupcodes.txt
